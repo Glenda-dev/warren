@@ -5,16 +5,18 @@
 extern crate alloc;
 
 use glenda::cap::{CapPtr, CapType, rights};
-use glenda::factotum as protocol;
 use glenda::ipc::{MsgTag, UTCB};
 use glenda::log;
 use glenda::println;
+use glenda::protocol::factotum as protocol;
 
 mod manager;
 mod process;
+mod request_cap;
 
 use manager::ResourceManager;
 use process::{ProcessManager, ThreadState};
+use request_cap::handle_request_cap;
 
 // Assume this is where our endpoint is.
 const FACTOTUM_ENDPOINT_SLOT: usize = 10;
@@ -69,6 +71,8 @@ fn main() -> ! {
             protocol::INIT_RESOURCES => {
                 handle_init_resources(&mut rm, utcb.mrs_regs[1], utcb.mrs_regs[2])
             }
+            protocol::INIT_IRQ => handle_init_irq(&mut rm, utcb.mrs_regs[1], utcb.mrs_regs[2]),
+            protocol::REQUEST_CAP => handle_request_cap(&mut pm, &mut rm, badge, utcb),
             protocol::SPAWN => handle_spawn(&mut pm, &mut rm, utcb),
             protocol::PROCESS_LOAD_IMAGE => handle_process_load_image(&mut pm, &mut rm, utcb),
             protocol::PROCESS_START => handle_process_start(&mut pm, utcb),
@@ -117,6 +121,12 @@ fn main() -> ! {
 fn handle_init_resources(rm: &mut ResourceManager, start: usize, count: usize) -> usize {
     println!("Factotum: Init resources start={} count={}", start, count);
     rm.init(start, count);
+    0
+}
+
+fn handle_init_irq(rm: &mut ResourceManager, start: usize, count: usize) -> usize {
+    println!("Factotum: Init IRQ start={} count={}", start, count);
+    rm.init_irq(start, count);
     0
 }
 

@@ -4,6 +4,8 @@ pub struct ResourceManager {
     pub cnode: CapPtr, // Factotum's own CNode (Slot 0)
     pub untyped_start: usize,
     pub untyped_end: usize,
+    pub irq_start: usize,
+    pub irq_end: usize,
     pub next_free_slot: usize,
 }
 
@@ -13,6 +15,8 @@ impl ResourceManager {
             cnode: CapPtr(0),
             untyped_start: 0,
             untyped_end: 0,
+            irq_start: 0,
+            irq_end: 0,
             next_free_slot: 200, // Start allocating slots from 200 (arbitrary safe zone)
         }
     }
@@ -20,6 +24,11 @@ impl ResourceManager {
     pub fn init(&mut self, start: usize, count: usize) {
         self.untyped_start = start;
         self.untyped_end = start + count;
+    }
+
+    pub fn init_irq(&mut self, start: usize, count: usize) {
+        self.irq_start = start;
+        self.irq_end = start + count;
     }
 
     pub fn alloc_slot(&mut self) -> usize {
