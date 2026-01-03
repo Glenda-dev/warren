@@ -5,8 +5,8 @@
 extern crate alloc;
 
 use glenda::cap::{CapPtr, CapType, rights};
+use glenda::console;
 use glenda::ipc::{MsgTag, UTCB};
-use glenda::log;
 use glenda::println;
 use glenda::protocol::factotum as protocol;
 
@@ -30,7 +30,7 @@ const EXCEPTION: usize = 0xFFFE;
 #[unsafe(no_mangle)]
 fn main() -> ! {
     // Initialize logging
-    log::init(CapPtr(glenda::bootinfo::CONSOLE_CAP));
+    console::init(CapPtr(glenda::bootinfo::CONSOLE_CAP));
     println!("Factotum: Starting...");
 
     let mut pm = ProcessManager::new();
