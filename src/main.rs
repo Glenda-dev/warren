@@ -51,6 +51,15 @@ fn main() -> ! {
         loop {}
     }
 
+    // Map BootInfo
+    let bootinfo_cap = CapPtr(9); // Slot 9 passed by 9ball
+    if my_vspace.pagetable_map(bootinfo_cap, glenda::bootinfo::BOOTINFO_VA, rights::READ as usize)
+        != 0
+    {
+        log!("Failed to map bootinfo");
+        loop {}
+    }
+
     // Parse Initrd
     let total_size_ptr = (INITRD_VA + 8) as *const u32;
     let total_size = unsafe { *total_size_ptr } as usize;
@@ -98,6 +107,23 @@ fn main() -> ! {
 
         // Dispatch
         let ret = match method {
+            protocol::SHARE_CAP => {
+                let dest_slot = utcb.mrs_regs[1];
+                let target_pid = utcb.mrs_regs[2];
+
+                if tag.has_cap() {
+                    let cap_in_recv = CapPtr(RECV_SLOT);
+                    if let Some(target_proc) = pm.get_process_mut(target_pid) {
+                        let target_cnode = target_proc.cspace;
+                        let ret = target_cnode.cnode_copy(cap_in_recv, dest_slot, rights::ALL);
+                        ret
+                    } else {
+                        usize::MAX
+                    }
+                } else {
+                    usize::MAX
+                }
+            }
             protocol::INIT_RESOURCES => {
                 handle_init_resources(&mut rm, utcb.mrs_regs[1], utcb.mrs_regs[2])
             }

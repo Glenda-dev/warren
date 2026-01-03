@@ -1,6 +1,7 @@
 #!/bin/sh
 set -e
 
+MODE="debug"
 for arg in "$@"; do
   if [ "$arg" = "--release" ]; then
     MODE="release"
