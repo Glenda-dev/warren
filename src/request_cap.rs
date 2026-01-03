@@ -50,6 +50,19 @@ pub fn handle_request_cap(
             return usize::MAX;
         }
     }
+    // Type 3: Initrd
+    else if cap_type == 3 {
+        if let Some(proc) = pm.get_process_mut(pid) {
+            let requester_cnode = proc.cspace;
+            let ret = requester_cnode.cnode_copy(CapPtr(4), dest_slot, rights::READ);
+            if ret != 0 {
+                println!("Factotum: Failed to copy Initrd cap: {}", ret);
+                return usize::MAX;
+            }
+            return 0;
+        }
+        return usize::MAX;
+    }
     // Type 2: New Endpoint
     else if cap_type == 2 {
         if let Some(proc) = pm.get_process_mut(pid) {
