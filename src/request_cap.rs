@@ -1,8 +1,8 @@
+use crate::log;
 use crate::manager::ResourceManager;
 use crate::process::ProcessManager;
 use glenda::cap::{CapPtr, CapType, rights};
 use glenda::ipc::UTCB;
-use glenda::println;
 
 pub fn handle_request_cap(
     pm: &mut ProcessManager,
@@ -17,21 +17,25 @@ pub fn handle_request_cap(
 
     let pid = if target_pid == 0 { badge } else { target_pid };
 
-    println!(
-        "Factotum: REQUEST_CAP type={} id={} dest={} target={} from PID {}",
-        cap_type, id, dest_slot, pid, badge
+    log!(
+        "REQUEST_CAP type={} id={} dest={} target={} from PID {}",
+        cap_type,
+        id,
+        dest_slot,
+        pid,
+        badge
     );
 
     // Type 1: IRQ
     if cap_type == 1 {
         // ... (existing IRQ logic)
         if rm.irq_start == 0 {
-            println!("Factotum: No IRQ caps available");
+            log!("No IRQ caps available");
             return usize::MAX;
         }
 
         if id >= (rm.irq_end - rm.irq_start) {
-            println!("Factotum: IRQ {} out of range", id);
+            log!("IRQ {} out of range", id);
             return usize::MAX;
         }
 
@@ -41,12 +45,12 @@ pub fn handle_request_cap(
             let requester_cnode = proc.cspace;
             let ret = requester_cnode.cnode_copy(CapPtr(src_slot), dest_slot, rights::ALL);
             if ret != 0 {
-                println!("Factotum: Failed to copy cap: {}", ret);
+                log!("Failed to copy cap: {}", ret);
                 return usize::MAX;
             }
             return 0;
         } else {
-            println!("Factotum: Process {} not found", pid);
+            log!("Process {} not found", pid);
             return usize::MAX;
         }
     }
@@ -56,7 +60,7 @@ pub fn handle_request_cap(
             let requester_cnode = proc.cspace;
             let ret = requester_cnode.cnode_copy(CapPtr(4), dest_slot, rights::READ);
             if ret != 0 {
-                println!("Factotum: Failed to copy Initrd cap: {}", ret);
+                log!("Failed to copy Initrd cap: {}", ret);
                 return usize::MAX;
             }
             return 0;
@@ -74,12 +78,12 @@ pub fn handle_request_cap(
                 let requester_cnode = proc.cspace;
                 let ret = requester_cnode.cnode_copy(ep, dest_slot, rights::ALL);
                 if ret != 0 {
-                    println!("Factotum: Failed to copy new endpoint: {}", ret);
+                    log!("Failed to copy new endpoint: {}", ret);
                     return usize::MAX;
                 }
                 return 0;
             } else {
-                println!("Factotum: OOM allocating endpoint");
+                log!("OOM allocating endpoint");
                 return usize::MAX;
             }
         }

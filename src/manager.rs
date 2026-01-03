@@ -17,7 +17,7 @@ impl ResourceManager {
             untyped_end: 0,
             irq_start: 0,
             irq_end: 0,
-            next_free_slot: 200, // Start allocating slots from 200 (arbitrary safe zone)
+            next_free_slot: 256, // Start allocating slots from 256 (arbitrary safe zone)
         }
     }
 

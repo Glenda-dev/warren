@@ -6,8 +6,9 @@ extern crate alloc;
 
 use glenda::cap::{CapPtr, CapType, rights};
 use glenda::console;
+use glenda::initrd::Initrd;
 use glenda::ipc::{MsgTag, UTCB};
-use glenda::println;
+use glenda::manifest::Manifest;
 use glenda::protocol::factotum as protocol;
 
 mod manager;
@@ -22,24 +23,53 @@ use request_cap::handle_request_cap;
 const FACTOTUM_ENDPOINT_SLOT: usize = 10;
 const FACTOTUM_UTCB_ADDR: usize = 0x7FFF_F000;
 const FACTOTUM_STACK_TOP: usize = 0x8000_0000;
+const INITRD_VA: usize = 0x3000_0000;
+const RECV_SLOT: usize = 30;
 
 // Fault labels
 const PAGE_FAULT: usize = 0xFFFF;
 const EXCEPTION: usize = 0xFFFE;
 
+#[macro_export]
+macro_rules! log {
+    ($($arg:tt)*) => ({
+        glenda::println!("Factotum: {}", format_args!($($arg)*));
+    })
+}
+
 #[unsafe(no_mangle)]
 fn main() -> ! {
     // Initialize logging
     console::init(CapPtr(glenda::bootinfo::CONSOLE_CAP));
-    println!("Factotum: Starting...");
+    log!("Starting...");
+
+    // Map Initrd
+    let initrd_cap = CapPtr(4); // Slot 4 passed by 9ball
+    let my_vspace = CapPtr(1);
+    if my_vspace.pagetable_map(initrd_cap, INITRD_VA, rights::READ as usize) != 0 {
+        log!("Failed to map initrd");
+        loop {}
+    }
+
+    // Parse Initrd
+    let total_size_ptr = (INITRD_VA + 8) as *const u32;
+    let total_size = unsafe { *total_size_ptr } as usize;
+    let initrd_slice = unsafe { core::slice::from_raw_parts(INITRD_VA as *const u8, total_size) };
+    let initrd = Initrd::new(initrd_slice).expect("Factotum: Failed to parse initrd");
+    log!("Initrd mapped and parsed. Size: {}", total_size);
 
     let mut pm = ProcessManager::new();
     let mut rm = ResourceManager::new();
+    let mut manifest: Option<Manifest> = None;
     let endpoint = CapPtr(FACTOTUM_ENDPOINT_SLOT);
 
-    println!("Factotum: Listening on endpoint {}", FACTOTUM_ENDPOINT_SLOT);
+    log!("Listening on endpoint {}", FACTOTUM_ENDPOINT_SLOT);
 
     loop {
+        // Prepare to receive a capability
+        let utcb = UTCB::current();
+        utcb.recv_window = CapPtr(RECV_SLOT);
+
         // Block and wait for a message
         let badge = endpoint.ipc_recv();
 
@@ -60,7 +90,7 @@ fn main() -> ! {
 
         // Check protocol label
         if label != protocol::FACTOTUM_PROTO {
-            println!("Factotum: Unknown protocol label: {:#x}", label);
+            log!("Unknown protocol label: {:#x}", label);
             continue;
         }
 
@@ -72,8 +102,73 @@ fn main() -> ! {
                 handle_init_resources(&mut rm, utcb.mrs_regs[1], utcb.mrs_regs[2])
             }
             protocol::INIT_IRQ => handle_init_irq(&mut rm, utcb.mrs_regs[1], utcb.mrs_regs[2]),
+            protocol::INIT_MANIFEST => {
+                if tag.has_cap() {
+                    let frame = CapPtr(RECV_SLOT);
+                    // Map it temporarily to parse
+                    my_vspace.pagetable_map(frame, 0x4000_0000, rights::READ as usize);
+                    let data = unsafe { core::slice::from_raw_parts(0x4000_0000 as *const u8, 4096) };
+                    manifest = Some(Manifest::parse(data));
+                    my_vspace.pagetable_unmap(0x4000_0000);
+                    log!("Manifest initialized");
+                    0
+                } else {
+                    1
+                }
+            }
+            protocol::SPAWN_SERVICE_MANIFEST => {
+                let index = utcb.mrs_regs[1];
+                if let Some(ref m) = manifest {
+                    if index < m.service.len() {
+                        let entry = &m.service[index];
+                        handle_spawn_service(&mut pm, &mut rm, &initrd, &initrd_slice, &entry.name, &entry.binary)
+                    } else {
+                        usize::MAX
+                    }
+                } else {
+                    usize::MAX
+                }
+            }
             protocol::REQUEST_CAP => handle_request_cap(&mut pm, &mut rm, badge, utcb),
-            protocol::SPAWN => handle_spawn(&mut pm, &mut rm, utcb),
+            protocol::SPAWN => {
+                let name_len = utcb.mrs_regs[1];
+                let name_bytes = &utcb.ipc_buffer[utcb.head..utcb.head + name_len];
+                let name = core::str::from_utf8(name_bytes).unwrap_or("unknown");
+                handle_spawn(&mut pm, &mut rm, name, utcb.mrs_regs[2])
+            }
+            protocol::SPAWN_SERVICE => {
+                let name_len = utcb.mrs_regs[1];
+                let binary_len = utcb.mrs_regs[2];
+                let name = core::str::from_utf8(&utcb.ipc_buffer[utcb.head..utcb.head + name_len])
+                    .unwrap_or("unknown");
+                let binary_name = core::str::from_utf8(
+                    &utcb.ipc_buffer[utcb.head + name_len..utcb.head + name_len + binary_len],
+                )
+                .unwrap_or(name);
+                handle_spawn_service(&mut pm, &mut rm, &initrd, initrd_slice, name, binary_name)
+            }
+            protocol::SPAWN_SERVICE_INITRD => {
+                let name_len = utcb.mrs_regs[1];
+                let binary_len = utcb.mrs_regs[2];
+                let name = core::str::from_utf8(&utcb.ipc_buffer[utcb.head..utcb.head + name_len])
+                    .unwrap_or("unknown");
+                let binary_name = core::str::from_utf8(
+                    &utcb.ipc_buffer[utcb.head + name_len..utcb.head + name_len + binary_len],
+                )
+                .unwrap_or(name);
+
+                let manifest_frame = if tag.has_cap() { CapPtr(RECV_SLOT) } else { CapPtr::null() };
+
+                handle_spawn_service_initrd(
+                    &mut pm,
+                    &mut rm,
+                    &initrd,
+                    initrd_slice,
+                    name,
+                    binary_name,
+                    manifest_frame,
+                )
+            }
             protocol::PROCESS_LOAD_IMAGE => handle_process_load_image(&mut pm, &mut rm, utcb),
             protocol::PROCESS_START => handle_process_start(&mut pm, utcb),
             protocol::EXIT => handle_exit(&mut pm, badge),
@@ -103,7 +198,7 @@ fn main() -> ! {
             }
             protocol::FORK => handle_fork(&mut pm, badge),
             _ => {
-                println!("Factotum: Unimplemented method: {}", method);
+                log!("Unimplemented method: {}", method);
                 // Error code
                 usize::MAX
             }
@@ -113,40 +208,30 @@ fn main() -> ! {
         // Construct reply tag: Label 0, Length 1 (return value)
         let reply_tag = MsgTag::new(0, 1);
 
-        let args = [ret, 0, 0, 0, 0];
-        endpoint.ipc_reply(reply_tag, &args);
+        let args = [ret, 0, 0, 0, 0, 0, 0];
+        endpoint.ipc_reply(reply_tag, args);
     }
 }
 
 fn handle_init_resources(rm: &mut ResourceManager, start: usize, count: usize) -> usize {
-    println!("Factotum: Init resources start={} count={}", start, count);
+    log!("Init resources start={} count={}", start, count);
     rm.init(start, count);
     0
 }
 
 fn handle_init_irq(rm: &mut ResourceManager, start: usize, count: usize) -> usize {
-    println!("Factotum: Init IRQ start={} count={}", start, count);
+    log!("Init IRQ start={} count={}", start, count);
     rm.init_irq(start, count);
     0
 }
 
-fn handle_spawn(pm: &mut ProcessManager, rm: &mut ResourceManager, utcb: &UTCB) -> usize {
-    // args: [method, name_len, flags]
-    let name_len = utcb.mrs_regs[1];
-    let flags = utcb.mrs_regs[2];
-
-    let ipc_buf = glenda::ipc::utcb::get_ipc_buffer();
-    if name_len > ipc_buf.0.len() {
-        return usize::MAX;
-    }
-
-    let name_bytes = &ipc_buf.0[0..name_len];
-    let name = match core::str::from_utf8(name_bytes) {
-        Ok(s) => s,
-        Err(_) => return usize::MAX,
-    };
-
-    println!("Factotum: SPAWN requested for '{}', flags: {}", name, flags);
+fn handle_spawn(
+    pm: &mut ProcessManager,
+    rm: &mut ResourceManager,
+    name: &str,
+    _flags: usize,
+) -> usize {
+    log!("SPAWN requested for '{}'", name);
 
     // Allocate Resources
     let cspace = rm.alloc_object(CapType::CNode, 12).expect("OOM CNode");
@@ -154,12 +239,15 @@ fn handle_spawn(pm: &mut ProcessManager, rm: &mut ResourceManager, utcb: &UTCB) 
     let tcb = rm.alloc_object(CapType::TCB, 0).expect("OOM TCB");
     let utcb_frame = rm.alloc_object(CapType::Frame, 0).expect("OOM UTCB Frame");
     let stack_frame = rm.alloc_object(CapType::Frame, 0).expect("OOM Stack Frame");
+    let tf_frame = rm.alloc_object(CapType::Frame, 0).expect("OOM TF Frame");
+    let kstack_frame = rm.alloc_object(CapType::Frame, 0).expect("OOM KStack Frame");
 
     // Setup CSpace
     // Mint CSpace to itself
     cspace.cnode_mint(cspace, 0, 0, rights::ALL);
     cspace.cnode_mint(vspace, 1, 0, rights::ALL);
     cspace.cnode_mint(tcb, 2, 0, rights::ALL);
+    cspace.cnode_mint(utcb_frame, 3, 0, rights::ALL);
 
     // Copy Console (Slot 8)
     cspace.cnode_copy(CapPtr(glenda::bootinfo::CONSOLE_CAP), 8, rights::ALL);
@@ -174,13 +262,7 @@ fn handle_spawn(pm: &mut ProcessManager, rm: &mut ResourceManager, utcb: &UTCB) 
     vspace.pagetable_map(utcb_frame, FACTOTUM_UTCB_ADDR, rights::RW as usize);
 
     // Configure TCB
-    tcb.tcb_configure(
-        cspace,
-        vspace,
-        FACTOTUM_UTCB_ADDR,
-        CapPtr(FACTOTUM_ENDPOINT_SLOT),
-        utcb_frame,
-    );
+    tcb.tcb_configure(cspace, vspace, utcb_frame, tf_frame, kstack_frame);
     tcb.tcb_set_priority(100);
 
     let pid = pm.allocate_pid();
@@ -203,8 +285,158 @@ fn handle_spawn(pm: &mut ProcessManager, rm: &mut ResourceManager, utcb: &UTCB) 
 
     pm.add_process(process);
 
-    println!("Factotum: Spawned process {} (created)", pid);
+    log!("Spawned process {} (created)", pid);
     pid
+}
+
+fn handle_spawn_service(
+    pm: &mut ProcessManager,
+    rm: &mut ResourceManager,
+    initrd: &Initrd,
+    _initrd_slice: &[u8],
+    name: &str,
+    binary_name: &str,
+) -> usize {
+    log!("SPAWN_SERVICE requested for '{}' (binary: {})", name, binary_name);
+
+    // 1. Find binary in initrd
+    let entry = match initrd.entries.iter().find(|e| e.name == binary_name) {
+        Some(e) => e,
+        None => {
+            log!("Binary '{}' not found in initrd", binary_name);
+            return usize::MAX;
+        }
+    };
+
+    // 2. Spawn
+    let pid = handle_spawn(pm, rm, name, 0);
+    if pid == usize::MAX {
+        return pid;
+    }
+
+    // 3. Load Image
+    // We use the Initrd Frame which is at Slot 4 in Factotum's CSpace.
+    let ret = load_image_to_process(pm, rm, pid, CapPtr(4), entry.offset, entry.size, 0x10000);
+    if ret != 0 {
+        log!("Failed to load image for {}", name);
+        return usize::MAX;
+    }
+
+    // 4. Start
+    handle_process_start_internal(pm, pid, 0x10000, FACTOTUM_STACK_TOP);
+
+    log!("Service '{}' started (PID: {})", name, pid);
+    pid
+}
+
+fn handle_spawn_service_initrd(
+    pm: &mut ProcessManager,
+    rm: &mut ResourceManager,
+    initrd: &Initrd,
+    _initrd_slice: &[u8],
+    name: &str,
+    binary_name: &str,
+    manifest_frame: CapPtr,
+) -> usize {
+    log!("SPAWN_SERVICE_INITRD requested for '{}' (binary: {})", name, binary_name);
+
+    // 1. Find binary in initrd
+    let entry = match initrd.entries.iter().find(|e| e.name == binary_name) {
+        Some(e) => e,
+        None => {
+            log!("Binary '{}' not found in initrd", binary_name);
+            return usize::MAX;
+        }
+    };
+
+    // 2. Spawn
+    let pid = handle_spawn(pm, rm, name, 0);
+    if pid == usize::MAX {
+        return pid;
+    }
+
+    // 3. Load Image
+    // We use the Initrd Frame which is at Slot 4 in Factotum's CSpace.
+    let ret = load_image_to_process(pm, rm, pid, CapPtr(4), entry.offset, entry.size, 0x10000);
+    if ret != 0 {
+        log!("Failed to load image for {}", name);
+        return usize::MAX;
+    }
+
+    // 4. Pass Manifest Frame if provided
+    if manifest_frame.0 != 0 {
+        let process = pm.get_process_mut(pid).unwrap();
+        let cnode = process.cspace;
+        let vspace = process.vspace;
+
+        // Mint into process CSpace at MANIFEST_SLOT
+        cnode.cnode_mint(manifest_frame, glenda::cap::MANIFEST_SLOT, 0, rights::READ);
+
+        // Map into process VSpace at 0x2000_0000
+        vspace.pagetable_map(manifest_frame, 0x2000_0000, rights::READ as usize);
+        log!("  Manifest frame passed to {} at slot {}", name, glenda::cap::MANIFEST_SLOT);
+    }
+
+    // 5. Start
+    handle_process_start_internal(pm, pid, 0x10000, FACTOTUM_STACK_TOP);
+
+    log!("Service '{}' started (PID: {})", name, pid);
+    pid
+}
+
+fn load_image_to_process(
+    pm: &mut ProcessManager,
+    rm: &mut ResourceManager,
+    pid: usize,
+    frame_cap: CapPtr,
+    offset: usize,
+    len: usize,
+    load_addr: usize,
+) -> usize {
+    if let Some(proc) = pm.get_process_mut(pid) {
+        let src_va = 0x6000_0000;
+        let my_vspace = CapPtr(1);
+
+        // Map Read-Only
+        my_vspace.pagetable_map(frame_cap, src_va, rights::READ as usize);
+
+        // 2. Copy Loop
+        let mut current_offset = 0;
+        while current_offset < len {
+            let chunk_len = core::cmp::min(4096, len - current_offset);
+            let target_vaddr = load_addr + current_offset;
+
+            let page_base = target_vaddr & !0xFFF;
+            let page_offset = target_vaddr & 0xFFF;
+
+            let dest_frame = if let Some(cap) = proc.frames.get(&page_base) {
+                *cap
+            } else {
+                let new_frame = rm.alloc_object(CapType::Frame, 0).expect("OOM Load Image");
+                proc.vspace.pagetable_map(new_frame, page_base, rights::ALL as usize); // RWX
+                proc.frames.insert(page_base, new_frame);
+                new_frame
+            };
+
+            let scratch_va = 0x5000_0000;
+            my_vspace.pagetable_map(dest_frame, scratch_va, rights::RW as usize);
+
+            let src_ptr = (src_va + offset + current_offset) as *const u8;
+            let dest_ptr = (scratch_va + page_offset) as *mut u8;
+            let copy_len = core::cmp::min(chunk_len, 4096 - page_offset);
+
+            unsafe {
+                core::ptr::copy_nonoverlapping(src_ptr, dest_ptr, copy_len);
+            }
+
+            my_vspace.pagetable_unmap(scratch_va);
+            current_offset += copy_len;
+        }
+
+        my_vspace.pagetable_unmap(src_va);
+        return 0;
+    }
+    usize::MAX
 }
 
 fn handle_process_load_image(
@@ -218,63 +450,18 @@ fn handle_process_load_image(
     let len = utcb.mrs_regs[4];
     let load_addr = utcb.mrs_regs[5];
 
+    load_image_to_process(pm, rm, pid, frame_cap, offset, len, load_addr)
+}
+
+fn handle_process_start_internal(
+    pm: &mut ProcessManager,
+    pid: usize,
+    entry: usize,
+    stack: usize,
+) -> usize {
     if let Some(proc) = pm.get_process_mut(pid) {
-        // 1. Map Source (Initrd) to Factotum VSpace
-        // We use a fixed location for reading initrd.
-        // WARNING: This assumes frame_cap is the WHOLE initrd or a large frame covering the range.
-        // If it's a small frame, we might need to map multiple times or assume offset is small.
-        // For now, assume it's the Initrd Frame which is large.
-
-        let src_va = 0x6000_0000;
-        let my_vspace = CapPtr(1);
-
-        // Map Read-Only
-        my_vspace.pagetable_map(frame_cap, src_va, rights::READ as usize);
-
-        // 2. Copy Loop
-        // We copy in chunks of 4KB (Page Size)
-        let mut current_offset = 0;
-        while current_offset < len {
-            let chunk_len = core::cmp::min(4096, len - current_offset);
-            let target_vaddr = load_addr + current_offset;
-
-            // Align target_vaddr to page boundary
-            let page_base = target_vaddr & !0xFFF;
-            let page_offset = target_vaddr & 0xFFF;
-
-            // Allocate Destination Frame if needed
-            let dest_frame = if let Some(cap) = proc.frames.get(&page_base) {
-                *cap
-            } else {
-                let new_frame = rm.alloc_object(CapType::Frame, 0).expect("OOM Load Image");
-                proc.vspace.pagetable_map(new_frame, page_base, rights::ALL as usize); // RWX
-                proc.frames.insert(page_base, new_frame);
-                new_frame
-            };
-
-            // Map Dest Frame to Scratch
-            let scratch_va = 0x5000_0000;
-            my_vspace.pagetable_map(dest_frame, scratch_va, rights::RW as usize);
-
-            // Copy
-            let src_ptr = (src_va + offset + current_offset) as *const u8;
-            let dest_ptr = (scratch_va + page_offset) as *mut u8;
-
-            // We need to be careful not to overflow the page in destination
-            let copy_len = core::cmp::min(chunk_len, 4096 - page_offset);
-
-            unsafe {
-                core::ptr::copy_nonoverlapping(src_ptr, dest_ptr, copy_len);
-            }
-
-            my_vspace.pagetable_unmap(scratch_va);
-
-            current_offset += copy_len;
-        }
-
-        // Unmap Source
-        my_vspace.pagetable_unmap(src_va);
-
+        proc.tcb.tcb_set_registers(rights::ALL as usize, entry, stack);
+        proc.tcb.tcb_resume();
         return 0;
     }
     usize::MAX
@@ -285,43 +472,37 @@ fn handle_process_start(pm: &mut ProcessManager, utcb: &UTCB) -> usize {
     let entry = utcb.mrs_regs[2];
     let stack = utcb.mrs_regs[3];
 
-    if let Some(proc) = pm.get_process(pid) {
-        println!("Factotum: Starting process {} at {:#x}", pid, entry);
-        proc.tcb.tcb_set_registers(rights::ALL as usize, entry, stack);
-        proc.tcb.tcb_resume();
-        return 0;
-    }
-    usize::MAX
+    handle_process_start_internal(pm, pid, entry, stack)
 }
 
 fn handle_fault(pm: &mut ProcessManager, badge: usize, label: usize, utcb: &UTCB) {
     let pid = badge; // Assuming badge is PID for now
-    println!("Factotum: Fault received from PID {}. Label: {:#x}", pid, label);
+    log!("Fault received from PID {}. Label: {:#x}", pid, label);
 
     if let Some(proc) = pm.get_process(pid) {
-        println!("Process '{}' faulted.", proc.name);
+        log!("Process '{}' faulted.", proc.name);
         if label == PAGE_FAULT {
             let addr = utcb.mrs_regs[1];
             let pc = utcb.mrs_regs[2];
-            println!("  Page Fault at address {:#x}, PC={:#x}", addr, pc);
+            log!("  Page Fault at address {:#x}, PC={:#x}", addr, pc);
             // TODO: Handle lazy allocation or stack growth
         } else if label == EXCEPTION {
             let cause = utcb.mrs_regs[0];
             let val = utcb.mrs_regs[1];
             let pc = utcb.mrs_regs[2];
-            println!("  Exception cause={} val={:#x} PC={:#x}", cause, val, pc);
+            log!("  Exception cause={} val={:#x} PC={:#x}", cause, val, pc);
         }
     } else {
-        println!("Fault from unknown PID {}", pid);
+        log!("Fault from unknown PID {}", pid);
     }
 
     // For now, kill the process on fault
-    println!("Factotum: Killing process {} due to fault", pid);
+    log!("Killing process {} due to fault", pid);
     pm.remove_process(pid);
 }
 
 fn handle_exit(pm: &mut ProcessManager, badge: usize) -> usize {
-    println!("Factotum: EXIT requested by badge {}", badge);
+    log!("EXIT requested by badge {}", badge);
     pm.remove_process(badge);
     0
 }
@@ -337,7 +518,7 @@ fn handle_yield() -> usize {
 }
 
 fn handle_sbrk(increment: usize) -> usize {
-    println!("Factotum: SBRK requested, increment: {}", increment);
+    log!("SBRK requested, increment: {}", increment);
     // TODO: Implement SBRK
     0
 }
@@ -350,9 +531,14 @@ fn handle_mmap(
     fd: usize,
     offset: usize,
 ) -> usize {
-    println!(
+    log!(
         "Factotum: MMAP requested: addr={:#x}, len={}, prot={}, flags={}, fd={}, offset={}",
-        addr, len, prot, flags, fd, offset
+        addr,
+        len,
+        prot,
+        flags,
+        fd,
+        offset
     );
     // TODO: Implement MMAP
     0
@@ -364,7 +550,7 @@ fn handle_thread_create(pm: &mut ProcessManager, badge: usize, utcb: &UTCB) -> u
     let _arg = utcb.mrs_regs[3];
     let _tls = utcb.mrs_regs[4];
 
-    println!("Factotum: THREAD_CREATE from PID {}: entry={:#x}, stack={:#x}", badge, entry, stack);
+    log!("THREAD_CREATE from PID {}: entry={:#x}, stack={:#x}", badge, entry, stack);
 
     if let Some(proc) = pm.get_process_mut(badge) {
         // TODO:
@@ -381,7 +567,7 @@ fn handle_thread_create(pm: &mut ProcessManager, badge: usize, utcb: &UTCB) -> u
 }
 
 fn handle_thread_exit(pm: &mut ProcessManager, badge: usize) -> usize {
-    println!("Factotum: THREAD_EXIT from PID {}", badge);
+    log!("THREAD_EXIT from PID {}", badge);
     // We need to know WHICH thread. Assuming single thread per process for badge mapping for now,
     // or that badge implies the thread.
     // If badge == pid, we might be exiting the main thread?
@@ -393,13 +579,13 @@ fn handle_thread_exit(pm: &mut ProcessManager, badge: usize) -> usize {
         // Assuming the caller passed TID in arg? No, protocol says THREAD_EXIT(status).
 
         // Placeholder:
-        println!("  (Thread exit not fully implemented without thread identification)");
+        log!("  (Thread exit not fully implemented without thread identification)");
     }
     0
 }
 
 fn handle_thread_join(pm: &mut ProcessManager, badge: usize, target_tid: usize) -> usize {
-    println!("Factotum: THREAD_JOIN from PID {} waiting for TID {}", badge, target_tid);
+    log!("THREAD_JOIN from PID {} waiting for TID {}", badge, target_tid);
     if let Some(proc) = pm.get_process_mut(badge) {
         if let Some(target) = proc.get_thread(target_tid) {
             if target.state == ThreadState::Dead {
@@ -419,20 +605,20 @@ fn handle_futex_wait(
     val: usize,
     timeout: usize,
 ) -> usize {
-    println!("Factotum: FUTEX_WAIT addr={:#x} val={} timeout={}", addr, val, timeout);
+    log!("FUTEX_WAIT addr={:#x} val={} timeout={}", addr, val, timeout);
     // Check value at addr (need to read user memory)
     // If match, block thread.
     0
 }
 
 fn handle_futex_wake(_pm: &mut ProcessManager, _badge: usize, addr: usize, count: usize) -> usize {
-    println!("Factotum: FUTEX_WAKE addr={:#x} count={}", addr, count);
+    log!("FUTEX_WAKE addr={:#x} count={}", addr, count);
     // Wake up 'count' threads waiting on addr.
     0
 }
 
 fn handle_fork(pm: &mut ProcessManager, badge: usize) -> usize {
-    println!("Factotum: FORK requested by PID {}", badge);
+    log!("FORK requested by PID {}", badge);
     // 1. Create new process struct
     // 2. Copy VSpace (COW)
     // 3. Copy CSpace
