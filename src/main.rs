@@ -107,7 +107,8 @@ fn main() -> ! {
                     let frame = CapPtr(RECV_SLOT);
                     // Map it temporarily to parse
                     my_vspace.pagetable_map(frame, 0x4000_0000, rights::READ as usize);
-                    let data = unsafe { core::slice::from_raw_parts(0x4000_0000 as *const u8, 4096) };
+                    let data =
+                        unsafe { core::slice::from_raw_parts(0x4000_0000 as *const u8, 4096) };
                     manifest = Some(Manifest::parse(data));
                     my_vspace.pagetable_unmap(0x4000_0000);
                     log!("Manifest initialized");
@@ -121,7 +122,14 @@ fn main() -> ! {
                 if let Some(ref m) = manifest {
                     if index < m.service.len() {
                         let entry = &m.service[index];
-                        handle_spawn_service(&mut pm, &mut rm, &initrd, &initrd_slice, &entry.name, &entry.binary)
+                        handle_spawn_service(
+                            &mut pm,
+                            &mut rm,
+                            &initrd,
+                            &initrd_slice,
+                            &entry.name,
+                            &entry.binary,
+                        )
                     } else {
                         usize::MAX
                     }
