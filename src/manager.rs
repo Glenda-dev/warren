@@ -1,4 +1,4 @@
-use glenda::cap::{CapPtr, CapType, rights};
+use glenda::cap::{CapPtr, CapType};
 
 pub struct ResourceManager {
     pub cnode: CapPtr, // Factotum's own CNode (Slot 0)
