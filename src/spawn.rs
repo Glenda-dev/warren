@@ -1,6 +1,7 @@
 use alloc::string::ToString;
 use glenda::cap::{CapPtr, CapType, rights};
 use glenda::initrd::Initrd;
+use glenda::mem::PGSIZE;
 
 use crate::layout::{CONSOLE_SLOT, FACTOTUM_ENDPOINT_SLOT, FACTOTUM_STACK_TOP, FACTOTUM_UTCB_ADDR};
 use crate::log;
@@ -195,11 +196,11 @@ pub fn load_image_to_process(
                 core::ptr::copy_nonoverlapping(src_ptr, dest_ptr, copy_len);
             }
 
-            my_vspace.pagetable_unmap(scratch_va);
+            my_vspace.pagetable_unmap(scratch_va, PGSIZE);
             current_offset += copy_len;
         }
 
-        my_vspace.pagetable_unmap(src_va);
+        my_vspace.pagetable_unmap(src_va, PGSIZE);
         return 0;
     }
     usize::MAX
