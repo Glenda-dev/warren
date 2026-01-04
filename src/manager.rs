@@ -37,7 +37,7 @@ impl ResourceManager {
         slot
     }
 
-    pub fn alloc_object(&mut self, obj_type: CapType, size_bits: usize) -> Option<CapPtr> {
+    pub fn alloc_object(&mut self, obj_type: CapType, pages: usize) -> Option<CapPtr> {
         if self.untyped_start >= self.untyped_end {
             return None;
         }
@@ -48,7 +48,7 @@ impl ResourceManager {
         let dest_slot = self.alloc_slot();
         let dest_cap = CapPtr(dest_slot);
 
-        let ret = untyped_cap.untyped_retype(obj_type, size_bits, 1, self.cnode, dest_slot);
+        let ret = untyped_cap.untyped_retype(obj_type, pages, 1, self.cnode, dest_cap, false);
 
         if ret == 0 { Some(dest_cap) } else { None }
     }
