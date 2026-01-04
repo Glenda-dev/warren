@@ -1,9 +1,9 @@
 use alloc::string::ToString;
 use glenda::cap::{CapPtr, CapType, rights};
 use glenda::initrd::Initrd;
-use glenda::mem::PGSIZE;
+use glenda::mem::{ENTRY_VA, PGSIZE, STACK_SIZE, STACK_VA, UTCB_VA};
 
-use crate::layout::{CONSOLE_SLOT, FACTOTUM_ENDPOINT_SLOT, FACTOTUM_STACK_TOP, FACTOTUM_UTCB_ADDR};
+use crate::layout::{CONSOLE_SLOT, FACTOTUM_ENDPOINT_SLOT};
 use crate::log;
 use crate::manager::ResourceManager;
 use crate::process::{self, ProcessManager};
@@ -40,13 +40,13 @@ pub fn handle_spawn(
 
     // Setup VSpace
     // Map Stack
-    vspace.pagetable_map(stack_frame, FACTOTUM_STACK_TOP - 4096, rights::RW as usize);
+    vspace.pagetable_map(stack_frame, STACK_VA - STACK_SIZE, rights::RW as usize);
     // Map UTCB
-    vspace.pagetable_map(utcb_frame, FACTOTUM_UTCB_ADDR, rights::RW as usize);
+    vspace.pagetable_map(utcb_frame, UTCB_VA, rights::RW as usize);
 
     // Configure TCB
     tcb.tcb_configure(cspace, vspace, utcb_frame, tf_frame, kstack_frame);
-    tcb.tcb_set_priority(100);
+    tcb.tcb_set_priority(254); // Set high priority for Factotum
 
     let pid = pm.allocate_pid();
 
@@ -98,14 +98,14 @@ pub fn handle_spawn_service(
 
     // 3. Load Image
     // We use the Initrd Frame which is at Slot 4 in Factotum's CSpace.
-    let ret = load_image_to_process(pm, rm, pid, CapPtr(4), entry.offset, entry.size, 0x10000);
+    let ret = load_image_to_process(pm, rm, pid, CapPtr(4), entry.offset, entry.size, ENTRY_VA);
     if ret != 0 {
         log!("Failed to load image for {}", name);
         return usize::MAX;
     }
 
     // 4. Start
-    handle_process_start_internal(pm, pid, 0x10000, FACTOTUM_STACK_TOP);
+    handle_process_start_internal(pm, pid, ENTRY_VA, STACK_VA - STACK_SIZE);
 
     log!("Service '{}' started (PID: {})", name, pid);
     pid
@@ -138,14 +138,14 @@ pub fn handle_spawn_service_initrd(
 
     // 3. Load Image
     // We use the Initrd Frame which is at Slot 4 in Factotum's CSpace.
-    let ret = load_image_to_process(pm, rm, pid, CapPtr(4), entry.offset, entry.size, 0x10000);
+    let ret = load_image_to_process(pm, rm, pid, CapPtr(4), entry.offset, entry.size, ENTRY_VA);
     if ret != 0 {
         log!("Failed to load image for {}", name);
         return usize::MAX;
     }
 
     // 5. Start
-    handle_process_start_internal(pm, pid, 0x10000, FACTOTUM_STACK_TOP);
+    handle_process_start_internal(pm, pid, ENTRY_VA, STACK_VA);
 
     log!("Service '{}' started (PID: {})", name, pid);
     pid
