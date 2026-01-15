@@ -74,8 +74,8 @@ pub fn dispatch_loop(
             protocol::SPAWN_SERVICE_MANIFEST => {
                 let index = utcb.mrs_regs[1];
                 if let Some(ref m) = manifest {
-                    if index < m.service.len() {
-                        let entry = &m.service[index];
+                    if index < m.services.len() {
+                        let entry = &m.services[index];
                         handle_spawn_service(
                             &mut pm,
                             &mut rm,
