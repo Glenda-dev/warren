@@ -32,11 +32,16 @@ fn main() -> ! {
     let total_size = unsafe { *total_size_ptr } as usize;
     let initrd_slice = unsafe { core::slice::from_raw_parts(INITRD_VA as *const u8, total_size) };
     let initrd = Initrd::new(initrd_slice).expect("Factotum: Failed to parse initrd");
-    log!("Initrd mapped and parsed. Size: {}", total_size);
+    log!("Initrd parsed. Size: {} KB", total_size / 1024);
 
     let pm = ProcessManager::new();
     let rm = ResourceManager::new();
-    let manifest: Option<Manifest> = None;
+    // Find Manifest
+    let manifest = if let Some(data) = initrd.get_file("manifest") {
+        Manifest::parse(data).expect("Failed to parse manifest")
+    } else {
+        panic!("Manifest not found in initrd")
+    };
 
     log!("Listening on endpoint {}", FACTOTUM_ENDPOINT_SLOT);
 

@@ -19,7 +19,7 @@ const EXCEPTION: usize = 0xFFFE;
 pub fn dispatch_loop(
     mut pm: ProcessManager,
     mut rm: ResourceManager,
-    manifest: Option<Manifest>,
+    manifest: Manifest,
     initrd: Initrd,
     initrd_slice: &[u8],
 ) -> ! {
@@ -73,20 +73,16 @@ pub fn dispatch_loop(
             }
             protocol::SPAWN_SERVICE_MANIFEST => {
                 let index = utcb.mrs_regs[1];
-                if let Some(ref m) = manifest {
-                    if index < m.services.len() {
-                        let entry = &m.services[index];
-                        handle_spawn_service(
-                            &mut pm,
-                            &mut rm,
-                            &initrd,
-                            initrd_slice,
-                            &entry.name,
-                            &entry.binary,
-                        )
-                    } else {
-                        usize::MAX
-                    }
+                if index < manifest.services.len() {
+                    let entry = &manifest.services[index];
+                    handle_spawn_service(
+                        &mut pm,
+                        &mut rm,
+                        &initrd,
+                        initrd_slice,
+                        &entry.name,
+                        &entry.binary,
+                    )
                 } else {
                     usize::MAX
                 }
