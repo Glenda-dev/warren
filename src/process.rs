@@ -1,6 +1,6 @@
 use alloc::collections::BTreeMap;
 use alloc::string::String;
-use glenda::cap::CapPtr;
+use glenda::cap::{CNode, Frame, PageTable, TCB};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ThreadState {
@@ -11,7 +11,7 @@ pub enum ThreadState {
 
 pub struct Thread {
     pub tid: usize,
-    pub tcb: CapPtr, // Capability to the TCB in Factotum's CSpace
+    pub tcb: TCB, // Capability to the TCB in Factotum's CSpace
     pub state: ThreadState,
     pub wait_tid: Option<usize>,   // If blocked on join
     pub futex_addr: Option<usize>, // If blocked on futex
@@ -21,11 +21,11 @@ pub struct Process {
     pub pid: usize,
     pub ppid: usize,
     pub name: String,
-    pub cspace: CapPtr,
-    pub vspace: CapPtr,
-    pub tcb: CapPtr, // Main thread TCB
+    pub cspace: CNode,
+    pub vspace: PageTable,
+    pub tcb: TCB, // Main thread TCB
     pub threads: BTreeMap<usize, Thread>,
-    pub frames: BTreeMap<usize, CapPtr>,
+    pub frames: BTreeMap<usize, Frame>, // Allocated frames
     pub next_tid: usize,
     // Add more fields as needed (e.g., memory regions)
 }
@@ -35,9 +35,9 @@ impl Process {
         pid: usize,
         ppid: usize,
         name: String,
-        cspace: CapPtr,
-        vspace: CapPtr,
-        tcb: CapPtr,
+        cspace: CNode,
+        vspace: PageTable,
+        tcb: TCB,
     ) -> Self {
         Self {
             pid,
@@ -52,7 +52,7 @@ impl Process {
         }
     }
 
-    pub fn add_thread(&mut self, tcb: CapPtr) -> usize {
+    pub fn add_thread(&mut self, tcb: TCB) -> usize {
         let tid = self.next_tid;
         self.next_tid += 1;
         let thread =

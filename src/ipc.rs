@@ -1,18 +1,16 @@
-use glenda::cap::{CapPtr, rights};
+use crate::layout::{MONITOR_CAP, RECV_CAP};
+use crate::log;
+use crate::manager::ResourceManager;
+use crate::process::{ProcessManager, ThreadState};
+use crate::spawn::{
+    handle_process_start_internal, handle_spawn, handle_spawn_service, handle_spawn_service_initrd,
+    load_image_to_process,
+};
+use glenda::cap::{CapPtr, Frame, Reply, TCB, rights};
 use glenda::initrd::Initrd;
 use glenda::ipc::{MsgTag, UTCB};
 use glenda::manifest::Manifest;
 use glenda::protocol::factotum as protocol;
-
-use crate::layout::{FACTOTUM_ENDPOINT_SLOT, RECV_SLOT};
-use crate::log;
-use crate::manager::ResourceManager;
-use crate::process::{ProcessManager, ThreadState};
-use crate::request_cap::handle_request_cap;
-use crate::spawn::{
-    handle_spawn, handle_spawn_service, handle_spawn_service_initrd, handle_process_start_internal,
-    load_image_to_process,
-};
 
 // Fault labels
 const PAGE_FAULT: usize = 0xFFFF;
@@ -25,15 +23,15 @@ pub fn dispatch_loop(
     initrd: Initrd,
     initrd_slice: &[u8],
 ) -> ! {
-    let endpoint = CapPtr(FACTOTUM_ENDPOINT_SLOT);
+    let endpoint = MONITOR_CAP;
 
     loop {
         // Prepare to receive a capability
         let utcb = UTCB::current();
-        utcb.recv_window = CapPtr(RECV_SLOT);
+        utcb.recv_window = RECV_CAP;
 
         // Block and wait for a message
-        let badge = endpoint.ipc_recv();
+        let badge = endpoint.recv();
 
         // Get the message from UTCB
         let utcb = UTCB::current();
@@ -61,10 +59,10 @@ pub fn dispatch_loop(
                 let target_pid = utcb.mrs_regs[2];
 
                 if tag.has_cap() {
-                    let cap_in_recv = CapPtr(RECV_SLOT);
+                    let cap_in_recv = RECV_CAP;
                     if let Some(target_proc) = pm.get_process_mut(target_pid) {
                         let target_cnode = target_proc.cspace;
-                        let ret = target_cnode.cnode_copy(cap_in_recv, dest_slot, rights::ALL);
+                        let ret = target_cnode.copy(cap_in_recv.cap(), dest_slot, rights::ALL);
                         ret
                     } else {
                         usize::MAX
@@ -76,7 +74,6 @@ pub fn dispatch_loop(
             protocol::INIT_RESOURCES => {
                 handle_init_resources(&mut rm, utcb.mrs_regs[1], utcb.mrs_regs[2])
             }
-            protocol::INIT_IRQ => handle_init_irq(&mut rm, utcb.mrs_regs[1], utcb.mrs_regs[2]),
             protocol::SPAWN_SERVICE_MANIFEST => {
                 let index = utcb.mrs_regs[1];
                 if let Some(ref m) = manifest {
@@ -97,7 +94,6 @@ pub fn dispatch_loop(
                     usize::MAX
                 }
             }
-            protocol::REQUEST_CAP => handle_request_cap(&mut pm, &mut rm, badge, utcb),
             protocol::SPAWN => {
                 let name_len = utcb.mrs_regs[1];
                 let name_bytes = &utcb.ipc_buffer[utcb.head..utcb.head + name_len];
@@ -168,22 +164,22 @@ pub fn dispatch_loop(
             }
         };
 
-        // Reply
+        // TODO: Reply
+        unimplemented!();
+        let reply_cap = Reply::from(RECV_CAP.cap());
         let reply_tag = MsgTag::new(0, 1);
         let args = [ret, 0, 0, 0, 0, 0, 0];
-        endpoint.ipc_reply(reply_tag, args);
+        reply_cap.reply(reply_tag, args);
     }
 }
 
-fn handle_init_resources(rm: &mut ResourceManager, start: usize, count: usize) -> usize {
-    log!("Init resources start={} count={}", start, count);
-    rm.init(start, count);
-    0
-}
-
-fn handle_init_irq(rm: &mut ResourceManager, start: usize, count: usize) -> usize {
-    log!("Init IRQ start={} count={}", start, count);
-    rm.init_irq(start, count);
+fn handle_init_resources(
+    rm: &mut ResourceManager,
+    untyped_start: usize,
+    untyped_count: usize,
+) -> usize {
+    log!("Init resources untyped_start={} untyped_count={}", untyped_start, untyped_count);
+    rm.init(untyped_start, untyped_count);
     0
 }
 
@@ -193,7 +189,7 @@ fn handle_process_load_image(
     utcb: &UTCB,
 ) -> usize {
     let pid = utcb.mrs_regs[1];
-    let frame_cap = CapPtr(utcb.mrs_regs[2]);
+    let frame_cap = Frame::from(CapPtr::from(utcb.mrs_regs[2]));
     let offset = utcb.mrs_regs[3];
     let len = utcb.mrs_regs[4];
     let load_addr = utcb.mrs_regs[5];
@@ -281,7 +277,8 @@ fn handle_thread_create(pm: &mut ProcessManager, badge: usize, utcb: &UTCB) -> u
     log!("THREAD_CREATE from PID {}: entry={:#x}, stack={:#x}", badge, entry, stack);
 
     if let Some(proc) = pm.get_process_mut(badge) {
-        let tid = proc.add_thread(CapPtr(0));
+        unimplemented!();
+        let tid = proc.add_thread(TCB::from(CapPtr::null()));
         return tid;
     }
     usize::MAX

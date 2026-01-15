@@ -3,9 +3,6 @@
 #![allow(dead_code)]
 
 extern crate alloc;
-
-use glenda::cap::CapPtr;
-use glenda::console;
 use glenda::initrd::Initrd;
 use glenda::manifest::Manifest;
 
@@ -13,10 +10,9 @@ mod ipc;
 mod layout;
 mod manager;
 mod process;
-mod request_cap;
 mod spawn;
 
-use layout::{CONSOLE_SLOT, FACTOTUM_ENDPOINT_SLOT, INITRD_VA};
+use layout::{FACTOTUM_ENDPOINT_SLOT, INITRD_VA};
 use manager::ResourceManager;
 use process::ProcessManager;
 
@@ -29,8 +25,6 @@ macro_rules! log {
 
 #[unsafe(no_mangle)]
 fn main() -> ! {
-    // Initialize logging
-    console::init(CapPtr(CONSOLE_SLOT));
     log!("Starting...");
 
     // Parse Initrd
