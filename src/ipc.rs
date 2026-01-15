@@ -1,4 +1,4 @@
-use crate::layout::{MONITOR_CAP, RECV_CAP};
+use crate::layout::{MONITOR_CAP, RECV_CAP, RECV_SLOT};
 use crate::log;
 use crate::manager::ResourceManager;
 use crate::process::{ProcessManager, ThreadState};
@@ -27,11 +27,8 @@ pub fn dispatch_loop(
 
     loop {
         // Prepare to receive a capability
-        let utcb = UTCB::current();
-        utcb.recv_window = RECV_CAP;
-
         // Block and wait for a message
-        let badge = endpoint.recv();
+        let badge = endpoint.recv(RECV_SLOT);
 
         // Get the message from UTCB
         let utcb = UTCB::current();
