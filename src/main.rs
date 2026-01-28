@@ -3,6 +3,7 @@
 #![allow(dead_code)]
 
 extern crate alloc;
+use glenda;
 use glenda::initrd::Initrd;
 use glenda::manifest::Manifest;
 
@@ -24,7 +25,7 @@ macro_rules! log {
 }
 
 #[unsafe(no_mangle)]
-fn main() -> ! {
+fn main() -> usize {
     log!("Starting...");
 
     // Parse Initrd
@@ -46,4 +47,5 @@ fn main() -> ! {
     log!("Listening on endpoint {}", FACTOTUM_ENDPOINT_SLOT);
 
     ipc::dispatch_loop(pm, rm, manifest, initrd, initrd_slice);
+    1
 }

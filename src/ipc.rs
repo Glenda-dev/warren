@@ -22,7 +22,7 @@ pub fn dispatch_loop(
     manifest: Manifest,
     initrd: Initrd,
     initrd_slice: &[u8],
-) -> ! {
+) {
     let endpoint = MONITOR_CAP;
 
     loop {
