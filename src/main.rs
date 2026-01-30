@@ -5,16 +5,15 @@
 extern crate alloc;
 use glenda;
 
-mod bootinfo;
 mod elf;
-mod initrd;
 mod layout;
 mod manager;
 mod process;
 
-use bootinfo::BootInfo;
 use glenda::cap::CSPACE_CAP;
-use initrd::Initrd;
+use glenda::runtime::bootinfo;
+use glenda::runtime::bootinfo::BootInfo;
+use glenda::runtime::initrd::Initrd;
 use layout::{BOOTINFO_VA, ENDPOINT_CAP, INITRD_VA};
 use manager::{ProcessManager, ResourceManager};
 

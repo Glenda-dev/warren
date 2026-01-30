@@ -1,7 +1,7 @@
-use crate::bootinfo::{BootInfo, UntypedRegion};
-use crate::layout::UNTYPED_SLOT;
+use glenda::cap::UNTYPED_SLOT;
 use glenda::cap::{CNode, CapPtr, CapType, Untyped};
 use glenda::error::code;
+use glenda::runtime::bootinfo::{BootInfo, UntypedRegion};
 
 #[derive(Clone, Copy, Debug)]
 pub struct UntypedBlock {
