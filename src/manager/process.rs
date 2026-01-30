@@ -8,7 +8,7 @@ use alloc::collections::BTreeMap;
 use alloc::string::{String, ToString};
 use glenda::arch::mem::PGSIZE;
 use glenda::cap::{CNode, CapPtr, CapType, Endpoint, Frame, Reply, Rights, TCB, VSpace};
-use glenda::cap::{CONSOLE_CAP, CONSOLE_SLOT, ROOT_CSPACE_GUARD, VSPACE_CAP};
+use glenda::cap::{CONSOLE_CAP, CONSOLE_SLOT, VSPACE_CAP};
 use glenda::error::Error;
 use glenda::ipc::MsgTag;
 use glenda::ipc::utcb;
@@ -62,14 +62,14 @@ impl<'a> ProcessManager<'a> {
             vspace,
             resource_mgr,
             initrd,
-            free_slot: 1000,
+            free_slot: 100,
         }
     }
 
     fn alloc_slot(&mut self) -> CapPtr {
         let slot = self.free_slot;
         self.free_slot += 1;
-        CapPtr::new(slot, 0)
+        CapPtr::new(slot)
     }
 
     pub fn init(&mut self) -> Result<(), Error> {
@@ -170,7 +170,7 @@ impl<'a> ProcessManager<'a> {
         // 3. Create Process Structures (allocating in Factotum CNode)
         let cnode_slot = self.alloc_slot();
         self.resource_mgr
-            .alloc(CapType::CNode, ROOT_CSPACE_GUARD, self.root_cnode, cnode_slot)
+            .alloc(CapType::CNode, 0, self.root_cnode, cnode_slot)
             .map_err(|_| Error::UntypeOOM)?;
         let child_cnode = CNode::from(cnode_slot);
 
@@ -229,7 +229,7 @@ impl<'a> ProcessManager<'a> {
                     || {
                         let slot = self.free_slot;
                         self.free_slot += 1;
-                        CapPtr::new(slot, 0)
+                        CapPtr::new(slot)
                     },
                 )
                 .map_err(|_| Error::MappingFailed)?;
@@ -248,9 +248,9 @@ impl<'a> ProcessManager<'a> {
         child_tcb.configure(
             child_cnode,
             child_pd,
-            Frame::from(CapPtr::new(0, 0)),
-            Frame::from(CapPtr::new(0, 0)),
-            Frame::from(CapPtr::new(0, 0)),
+            Frame::from(CapPtr::new(0)),
+            Frame::from(CapPtr::new(0)),
+            Frame::from(CapPtr::new(0)),
         );
 
         child_tcb.set_registers(entry_point, STACK_VA);
@@ -277,7 +277,7 @@ impl<'a> ProcessManager<'a> {
 
         let cnode_slot = self.alloc_slot();
         self.resource_mgr
-            .alloc(CapType::CNode, 64, self.root_cnode, cnode_slot)
+            .alloc(CapType::CNode, 0, self.root_cnode, cnode_slot)
             .map_err(|_| Error::UntypeOOM)?;
         let child_cnode = CNode::from(cnode_slot);
 
@@ -289,7 +289,7 @@ impl<'a> ProcessManager<'a> {
 
         let tcb_slot = self.alloc_slot();
         self.resource_mgr
-            .alloc(CapType::TCB, 1, self.root_cnode, tcb_slot)
+            .alloc(CapType::TCB, 0, self.root_cnode, tcb_slot)
             .map_err(|_| Error::UntypeOOM)?;
         let child_tcb = TCB::from(tcb_slot);
 
@@ -306,7 +306,7 @@ impl<'a> ProcessManager<'a> {
         let mut get_slot = || unsafe {
             let s = *free_slot_ptr;
             *free_slot_ptr += 1; // Increment
-            CapPtr::new(s, 0)
+            CapPtr::new(s)
         };
 
         let mut child_vspace_mgr = VSpaceManager::new(child_pd);
@@ -333,9 +333,9 @@ impl<'a> ProcessManager<'a> {
         child_tcb.configure(
             child_cnode,
             child_pd,
-            Frame::from(CapPtr::new(0, 0)),
-            Frame::from(CapPtr::new(0, 0)),
-            Frame::from(CapPtr::new(0, 0)),
+            Frame::from(CapPtr::new(0)),
+            Frame::from(CapPtr::new(0)),
+            Frame::from(CapPtr::new(0)),
         );
 
         let mut process = Process::new(pid, parent_pid, name, child_tcb, child_pd, child_cnode);
@@ -385,7 +385,7 @@ impl<'a> ProcessManager<'a> {
                 // Inline alloc_slot
                 let slot_idx = unsafe { *free_slot };
                 unsafe { *free_slot += 1 };
-                let slot = CapPtr::new(slot_idx, 0);
+                let slot = CapPtr::new(slot_idx);
 
                 unsafe { &mut *resource_mgr }
                     .alloc(CapType::Frame, 1, root_cnode, slot)
@@ -404,7 +404,7 @@ impl<'a> ProcessManager<'a> {
                         || unsafe {
                             let s = *free_slot;
                             *free_slot += 1;
-                            CapPtr::new(s, 0)
+                            CapPtr::new(s)
                         },
                     )
                     .map_err(|_| Error::MappingFailed)?;
@@ -450,7 +450,7 @@ impl<'a> ProcessManager<'a> {
             // Inline alloc_slot
             let slot_idx = unsafe { *free_slot };
             unsafe { *free_slot += 1 };
-            let slot = CapPtr::new(slot_idx, 0);
+            let slot = CapPtr::new(slot_idx);
 
             unsafe { &mut *resource_mgr }
                 .alloc(CapType::Frame, 1, root_cnode, slot)
@@ -468,7 +468,7 @@ impl<'a> ProcessManager<'a> {
                     || unsafe {
                         let s = *free_slot;
                         *free_slot += 1;
-                        CapPtr::new(s, 0)
+                        CapPtr::new(s)
                     },
                 )
                 .map_err(|_| Error::MappingFailed)?;
@@ -533,7 +533,7 @@ impl<'a> ProcessManager<'a> {
                 // Alloc Frame in Factotum
                 let slot = *free_slot;
                 *free_slot += 1;
-                let frame_cap = CapPtr::new(slot, 0);
+                let frame_cap = CapPtr::new(slot);
 
                 resource_mgr
                     .alloc(CapType::Frame, 1, root_cnode, frame_cap)
@@ -553,7 +553,7 @@ impl<'a> ProcessManager<'a> {
                         || {
                             let s = *free_slot;
                             *free_slot += 1;
-                            CapPtr::new(s, 0)
+                            CapPtr::new(s)
                         },
                     )
                     .map_err(|_| Error::MappingFailed)?;
@@ -606,7 +606,7 @@ impl<'a> ProcessManager<'a> {
                         || {
                             let s = *free_slot;
                             *free_slot += 1;
-                            CapPtr::new(s, 0)
+                            CapPtr::new(s)
                         },
                     )
                     .map_err(|_| Error::MappingFailed)?;
