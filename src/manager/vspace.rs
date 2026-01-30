@@ -2,7 +2,7 @@ use super::ResourceManager;
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use glenda::arch::mem::{PGSIZE, SHIFTS, VPN_MASK};
-use glenda::cap::{CNode, CapPtr, CapType, Frame, PageTable, VSPACE_CAP, VSpace};
+use glenda::cap::{CNode, CapPtr, CapType, Frame, PageTable, VSpace};
 use glenda::mem::Perms;
 
 #[derive(Debug)]
