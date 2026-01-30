@@ -3,6 +3,7 @@ use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use glenda::arch::mem::{PGSIZE, SHIFTS, VPN_MASK};
 use glenda::cap::{CNode, CapPtr, CapType, Frame, PageTable, VSpace};
+use glenda::error::Error;
 use glenda::mem::Perms;
 
 #[derive(Debug)]
@@ -36,8 +37,8 @@ impl VSpaceManager {
         pages: usize,
         resource_mgr: &mut ResourceManager,
         dest_cnode: CNode,
-        mut get_slot: impl FnMut() -> CapPtr,
-    ) -> Result<(), &'static str> {
+        mut get_slot: impl FnMut(&mut ResourceManager) -> Result<CapPtr, Error>,
+    ) -> Result<(), Error> {
         let levels = SHIFTS.len(); // e.g., 3 for SV39
 
         // 1. Ensure tables exist and check for collisions
@@ -57,13 +58,13 @@ impl VSpaceManager {
             // Check leaf
             let idx0 = index(curr_vaddr, 0);
             if leaf_map.contains_key(&idx0) {
-                return Err("Page already mapped");
+                return Err(Error::MappingFailed); // Already mapped
             }
         }
 
         // 2. Map Frame (Kernel maps all pages if Frame cap covers them)
         if self.root.map(frame, vaddr, perms) != 0 {
-            return Err("Failed to map Frame");
+            return Err(Error::MappingFailed);
         }
 
         // 3. Update shadow
@@ -100,9 +101,9 @@ impl VSpaceManager {
         level: usize,
         resource_mgr: &mut ResourceManager,
         dest_cnode: CNode,
-        get_slot: &mut impl FnMut() -> CapPtr,
+        get_slot: &mut impl FnMut(&mut ResourceManager) -> Result<CapPtr, Error>,
         pivot_root: VSpace,
-    ) -> Result<&'a mut BTreeMap<usize, Box<ShadowNode>>, &'static str> {
+    ) -> Result<&'a mut BTreeMap<usize, Box<ShadowNode>>, Error> {
         let idx = index(vaddr, level);
 
         if level == 0 {
@@ -110,13 +111,15 @@ impl VSpaceManager {
         }
 
         if !entries.contains_key(&idx) {
-            let slot = get_slot();
-            resource_mgr.alloc(CapType::PageTable, level, dest_cnode, slot)?;
+            let slot = get_slot(resource_mgr)?;
+            resource_mgr
+                .alloc(CapType::PageTable, level, dest_cnode, slot)
+                .map_err(|_| Error::UntypeOOM)?;
             let pt = PageTable::from(slot);
             let target_level = level - 1;
 
             if pivot_root.map_table(pt, vaddr, target_level) != 0 {
-                return Err("Failed to map intermediate VSpace");
+                return Err(Error::MappingFailed);
             }
             entries.insert(idx, Box::new(ShadowNode::new_table(slot)));
         }
@@ -138,7 +141,7 @@ impl VSpaceManager {
                     )
                 }
             }
-            _ => Err("Collision: Expected Table encountered Frame"),
+            _ => Err(Error::MappingFailed), // Collision
         }
     }
 
@@ -170,11 +173,11 @@ impl VSpaceManager {
         dest_mgr: &mut VSpaceManager,
         resource_mgr: &mut ResourceManager,
         root_cnode: CNode,
-        get_slot: &mut dyn FnMut() -> CapPtr,
+        get_slot: &mut dyn FnMut(&mut ResourceManager) -> Result<CapPtr, Error>,
         src_scratch_va: usize,
         dest_scratch_va: usize,
         current_vspace: &mut VSpaceManager,
-    ) -> Result<(), &'static str> {
+    ) -> Result<(), Error> {
         self.clone_level(
             &self.shadow,
             dest_mgr,
@@ -195,13 +198,13 @@ impl VSpaceManager {
         dest_mgr: &mut VSpaceManager,
         resource_mgr: &mut ResourceManager,
         root_cnode: CNode,
-        get_slot: &mut dyn FnMut() -> CapPtr,
+        get_slot: &mut dyn FnMut(&mut ResourceManager) -> Result<CapPtr, Error>,
         base_vaddr: usize,
         level: usize,
         src_scratch_va: usize,
         dest_scratch_va: usize,
         current_vspace: &mut VSpaceManager,
-    ) -> Result<(), &'static str> {
+    ) -> Result<(), Error> {
         for (&idx, node) in entries {
             let vaddr = base_vaddr | (idx << SHIFTS[level]);
 
@@ -209,7 +212,7 @@ impl VSpaceManager {
                 ShadowNode::Table { entries: sub_entries, .. } => {
                     // Recurse
                     if level == 0 {
-                        return Err("Table at level 0?");
+                        return Err(Error::MappingFailed);
                     }
                     self.clone_level(
                         sub_entries,
@@ -232,38 +235,36 @@ impl VSpaceManager {
                     }
 
                     // Alloc slot
-                    let new_slot = get_slot();
-                    resource_mgr.alloc(CapType::Frame, 1, root_cnode, new_slot)?;
+                    let new_slot = get_slot(resource_mgr)?;
+                    resource_mgr
+                        .alloc(CapType::Frame, 1, root_cnode, new_slot)
+                        .map_err(|_| Error::UntypeOOM)?;
                     let new_frame = Frame::from(new_slot);
 
                     // Map both to copy
                     let src_frame = Frame::from(*cap);
 
                     // Map src using current_vspace
-                    current_vspace
-                        .map_frame(
-                            src_frame,
-                            src_scratch_va,
-                            Perms::READ,
-                            num_pages,
-                            resource_mgr,
-                            root_cnode,
-                            &mut *get_slot,
-                        )
-                        .map_err(|_| "Failed map src")?;
+                    current_vspace.map_frame(
+                        src_frame,
+                        src_scratch_va,
+                        Perms::READ,
+                        num_pages,
+                        resource_mgr,
+                        root_cnode,
+                        &mut *get_slot,
+                    )?;
 
                     // Map dest using current_vspace
-                    current_vspace
-                        .map_frame(
-                            new_frame,
-                            dest_scratch_va,
-                            Perms::READ | Perms::WRITE,
-                            num_pages,
-                            resource_mgr,
-                            root_cnode,
-                            &mut *get_slot,
-                        )
-                        .map_err(|_| "Failed map dest")?;
+                    current_vspace.map_frame(
+                        new_frame,
+                        dest_scratch_va,
+                        Perms::READ | Perms::WRITE,
+                        num_pages,
+                        resource_mgr,
+                        root_cnode,
+                        &mut *get_slot,
+                    )?;
 
                     unsafe {
                         let total_size = num_pages * PGSIZE;

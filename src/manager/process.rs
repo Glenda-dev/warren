@@ -1,4 +1,4 @@
-use super::{ResourceManager, VSpaceManager};
+use super::{ResourceManager, SlotManager, VSpaceManager};
 use crate::elf::{ElfFile, PF_W, PF_X, PT_LOAD};
 use crate::layout::INIT_NAME;
 use crate::layout::{ENDPOINT_SLOT, REPLY_CAP, SCRATCH_VA, SCRATCH_VA2};
@@ -8,7 +8,7 @@ use alloc::collections::BTreeMap;
 use alloc::string::{String, ToString};
 use glenda::arch::mem::PGSIZE;
 use glenda::cap::{CNode, CapPtr, CapType, Endpoint, Frame, Reply, Rights, TCB, VSpace};
-use glenda::cap::{CONSOLE_CAP, CONSOLE_SLOT, CSPACE_SLOT, TCB_SLOT, VSPACE_CAP, VSPACE_SLOT};
+use glenda::cap::{CONSOLE_SLOT, CSPACE_SLOT, TCB_SLOT, VSPACE_CAP, VSPACE_SLOT};
 use glenda::error::{Error, code};
 use glenda::ipc::utcb;
 use glenda::ipc::{MsgFlags, MsgTag};
@@ -16,9 +16,8 @@ use glenda::mem::Perms;
 use glenda::mem::{ENTRY_VA, HEAP_VA, STACK_VA};
 use glenda::protocol::process as proto;
 use glenda::runtime::initrd::Initrd;
-use glenda::runtime::{MMIO_CAP, MMIO_SLOT, PLATFORM_CAP, PLATFORM_SLOT};
+use glenda::runtime::{MMIO_SLOT, PLATFORM_SLOT};
 const SERVICE_PRIORITY: u8 = 252;
-const REPLY_SLOT: usize = 100;
 
 pub struct ProcessManager<'a> {
     processes: BTreeMap<usize, Process>,
@@ -32,7 +31,7 @@ pub struct ProcessManager<'a> {
 
     resource_mgr: ResourceManager,
     initrd: Initrd<'a>,
-    free_slot: usize,
+    slot_mgr: SlotManager,
 }
 
 impl<'a> ProcessManager<'a> {
@@ -50,8 +49,6 @@ impl<'a> ProcessManager<'a> {
         vspace.mark_existing(STACK_VA);
         // 3. Heap
         vspace.mark_existing(HEAP_VA);
-        // 4. BootInfo/Scratch - 0x40000000
-        vspace.mark_existing(SCRATCH_VA);
 
         Self {
             processes: BTreeMap::new(),
@@ -62,14 +59,12 @@ impl<'a> ProcessManager<'a> {
             vspace,
             resource_mgr,
             initrd,
-            free_slot: 100,
+            slot_mgr: SlotManager::new(root_cnode, 101),
         }
     }
 
-    fn alloc_slot(&mut self) -> CapPtr {
-        let slot = self.free_slot;
-        self.free_slot += 1;
-        CapPtr::new(slot)
+    fn alloc_slot(&mut self) -> Result<CapPtr, Error> {
+        self.slot_mgr.alloc(&mut self.resource_mgr)
     }
 
     pub fn init(&mut self) -> Result<(), Error> {
@@ -175,19 +170,19 @@ impl<'a> ProcessManager<'a> {
         let file = self.initrd.get_file(&name).ok_or(Error::InvalidParam)?;
 
         // 2. Create Process Structures (allocating in Factotum CNode)
-        let cnode_slot = self.alloc_slot();
+        let cnode_slot = self.alloc_slot()?;
         self.resource_mgr
             .alloc(CapType::CNode, 0, self.root_cnode, cnode_slot)
             .map_err(|_| Error::UntypeOOM)?;
         let child_cnode = CNode::from(cnode_slot);
 
-        let pd_slot = self.alloc_slot();
+        let pd_slot = self.alloc_slot()?;
         self.resource_mgr
             .alloc(CapType::VSpace, 0, self.root_cnode, pd_slot)
             .map_err(|_| Error::UntypeOOM)?;
         let child_pd = VSpace::from(pd_slot);
 
-        let tcb_slot = self.alloc_slot();
+        let tcb_slot = self.alloc_slot()?;
         self.resource_mgr
             .alloc(CapType::TCB, 1, self.root_cnode, tcb_slot)
             .map_err(|_| Error::UntypeOOM)?;
@@ -206,13 +201,13 @@ impl<'a> ProcessManager<'a> {
         if child_cnode.copy(child_tcb.cap(), TCB_SLOT, Rights::ALL) != code::SUCCESS {
             return Err(Error::CNodeFull);
         }
-        if child_cnode.copy(CONSOLE_CAP.cap(), CONSOLE_SLOT, Rights::ALL) != code::SUCCESS {
+        if child_cnode.copy(CONSOLE_SLOT, CONSOLE_SLOT, Rights::ALL) != code::SUCCESS {
             return Err(Error::CNodeFull);
         }
-        if child_cnode.copy(PLATFORM_CAP.cap(), PLATFORM_SLOT, Rights::ALL) != code::SUCCESS {
+        if child_cnode.copy(PLATFORM_SLOT, PLATFORM_SLOT, Rights::ALL) != code::SUCCESS {
             return Err(Error::CNodeFull);
         }
-        if child_cnode.copy(MMIO_CAP.cap(), MMIO_SLOT, Rights::ALL) != code::SUCCESS {
+        if child_cnode.copy(MMIO_SLOT, MMIO_SLOT, Rights::ALL) != code::SUCCESS {
             return Err(Error::CNodeFull);
         }
         if child_cnode.mint(self.endpoint.cap(), ENDPOINT_SLOT, pid, Rights::ALL) != code::SUCCESS {
@@ -222,29 +217,21 @@ impl<'a> ProcessManager<'a> {
         // 4. Init child VSpace
         let mut vspace_mgr = VSpaceManager::new(child_pd);
 
-        // We need to pass free_slot ref to avoid closure borrow issues
-        let (entry_point, heap_start) = {
-            let mut free_slot_counter = self.free_slot;
-
-            let ret = Self::load_elf(
-                &file,
-                &mut vspace_mgr,
-                &mut self.resource_mgr,
-                self.root_cnode,
-                &mut free_slot_counter,
-                &mut self.vspace,
-            )?;
-
-            self.free_slot = free_slot_counter;
-            ret
-        };
+        let (entry_point, heap_start) = Self::load_elf(
+            &file,
+            &mut vspace_mgr,
+            &mut self.resource_mgr,
+            self.root_cnode,
+            &mut self.slot_mgr,
+            &mut self.vspace,
+        )?;
 
         child_tcb.configure(
             child_cnode,
             child_pd,
-            Frame::from(CapPtr::new(0)),
-            Frame::from(CapPtr::new(0)),
-            Frame::from(CapPtr::new(0)),
+            Frame::from(CapPtr::from(0)),
+            Frame::from(CapPtr::from(0)),
+            Frame::from(CapPtr::from(0)),
         );
 
         child_tcb.set_registers(entry_point, STACK_VA);
@@ -269,19 +256,19 @@ impl<'a> ProcessManager<'a> {
         let pid = self.next_pid;
         self.next_pid += 1;
 
-        let cnode_slot = self.alloc_slot();
+        let cnode_slot = self.alloc_slot()?;
         self.resource_mgr
             .alloc(CapType::CNode, 0, self.root_cnode, cnode_slot)
             .map_err(|_| Error::UntypeOOM)?;
         let child_cnode = CNode::from(cnode_slot);
 
-        let pd_slot = self.alloc_slot();
+        let pd_slot = self.alloc_slot()?;
         self.resource_mgr
             .alloc(CapType::VSpace, 0, self.root_cnode, pd_slot)
             .map_err(|_| Error::UntypeOOM)?;
         let child_pd = VSpace::from(pd_slot);
 
-        let tcb_slot = self.alloc_slot();
+        let tcb_slot = self.alloc_slot()?;
         self.resource_mgr
             .alloc(CapType::TCB, 0, self.root_cnode, tcb_slot)
             .map_err(|_| Error::UntypeOOM)?;
@@ -291,17 +278,13 @@ impl<'a> ProcessManager<'a> {
 
         // unsafe workaround for double borrow
         let res_mgr_ptr = &mut self.resource_mgr as *mut ResourceManager;
-        let free_slot_ptr = &mut self.free_slot as *mut usize;
+        let slot_mgr_ptr = &mut self.slot_mgr as *mut SlotManager;
         let vspace_ptr = &mut self.vspace as *mut VSpaceManager;
         let root_cnode = self.root_cnode;
 
         let parent = self.processes.get(&parent_pid).unwrap(); // Checked above
 
-        let mut get_slot = || unsafe {
-            let s = *free_slot_ptr;
-            *free_slot_ptr += 1; // Increment
-            CapPtr::new(s)
-        };
+        let mut get_slot = |rm: &mut ResourceManager| unsafe { (&mut *slot_mgr_ptr).alloc(rm) };
 
         let mut child_vspace_mgr = VSpaceManager::new(child_pd);
 
@@ -327,9 +310,9 @@ impl<'a> ProcessManager<'a> {
         child_tcb.configure(
             child_cnode,
             child_pd,
-            Frame::from(CapPtr::new(0)),
-            Frame::from(CapPtr::new(0)),
-            Frame::from(CapPtr::new(0)),
+            Frame::from(CapPtr::from(0)),
+            Frame::from(CapPtr::from(0)),
+            Frame::from(CapPtr::from(0)),
         );
 
         let mut process = Process::new(pid, parent_pid, name, child_tcb, child_pd, child_cnode);
@@ -353,8 +336,8 @@ impl<'a> ProcessManager<'a> {
 
     fn sys_brk(&mut self, pid: usize, incr: isize) -> Result<usize, Error> {
         // Pointers for disjoint borrow
-        let resource_mgr = &mut self.resource_mgr as *mut ResourceManager;
-        let free_slot = &mut self.free_slot as *mut usize;
+        let resource_mgr_ptr = &mut self.resource_mgr as *mut ResourceManager;
+        let slot_mgr_ptr = &mut self.slot_mgr as *mut SlotManager;
         let root_cnode = self.root_cnode;
 
         let process = self.processes.get_mut(&pid).ok_or(Error::InvalidParam)?;
@@ -377,11 +360,9 @@ impl<'a> ProcessManager<'a> {
 
             for vaddr in (start_page..end_page).step_by(PGSIZE) {
                 // Inline alloc_slot
-                let slot_idx = unsafe { *free_slot };
-                unsafe { *free_slot += 1 };
-                let slot = CapPtr::new(slot_idx);
+                let slot = unsafe { (&mut *slot_mgr_ptr).alloc(&mut *resource_mgr_ptr)? };
 
-                unsafe { &mut *resource_mgr }
+                unsafe { &mut *resource_mgr_ptr }
                     .alloc(CapType::Frame, 1, root_cnode, slot)
                     .map_err(|_| Error::UntypeOOM)?;
                 let frame = Frame::from(slot);
@@ -393,13 +374,9 @@ impl<'a> ProcessManager<'a> {
                         vaddr,
                         perms,
                         1,
-                        unsafe { &mut *resource_mgr },
+                        unsafe { &mut *resource_mgr_ptr },
                         root_cnode,
-                        || unsafe {
-                            let s = *free_slot;
-                            *free_slot += 1;
-                            CapPtr::new(s)
-                        },
+                        |rm| unsafe { (&mut *slot_mgr_ptr).alloc(rm) },
                     )
                     .map_err(|_| Error::MappingFailed)?;
             }
@@ -420,12 +397,13 @@ impl<'a> ProcessManager<'a> {
         let len = args[1];
 
         // Pointers for disjoint borrow
-        let resource_mgr = &mut self.resource_mgr as *mut ResourceManager;
-        let free_slot = &mut self.free_slot as *mut usize;
+        let resource_mgr_ptr = &mut self.resource_mgr as *mut ResourceManager;
+        let slot_mgr_ptr = &mut self.slot_mgr as *mut SlotManager;
         let root_cnode = self.root_cnode;
 
         let process = self.processes.get_mut(&pid).ok_or(Error::InvalidParam)?;
 
+        // ... omitted ...
         // Find suitable address if addr=0
         let vaddr = if msg_addr == 0 {
             // Simple bump allocator for mmap area?
@@ -442,11 +420,9 @@ impl<'a> ProcessManager<'a> {
 
         for v in (start_page..end_page).step_by(PGSIZE) {
             // Inline alloc_slot
-            let slot_idx = unsafe { *free_slot };
-            unsafe { *free_slot += 1 };
-            let slot = CapPtr::new(slot_idx);
+            let slot = unsafe { (&mut *slot_mgr_ptr).alloc(&mut *resource_mgr_ptr)? };
 
-            unsafe { &mut *resource_mgr }
+            unsafe { &mut *resource_mgr_ptr }
                 .alloc(CapType::Frame, 1, root_cnode, slot)
                 .map_err(|_| Error::UntypeOOM)?;
             let frame = Frame::from(slot);
@@ -457,13 +433,9 @@ impl<'a> ProcessManager<'a> {
                     v,
                     Perms::READ | Perms::WRITE | Perms::USER,
                     1,
-                    unsafe { &mut *resource_mgr },
+                    unsafe { &mut *resource_mgr_ptr },
                     root_cnode,
-                    || unsafe {
-                        let s = *free_slot;
-                        *free_slot += 1;
-                        CapPtr::new(s)
-                    },
+                    |rm| unsafe { (&mut *slot_mgr_ptr).alloc(rm) },
                 )
                 .map_err(|_| Error::MappingFailed)?;
         }
@@ -492,7 +464,7 @@ impl<'a> ProcessManager<'a> {
         dest_mgr: &mut VSpaceManager,
         resource_mgr: &mut ResourceManager,
         root_cnode: CNode,
-        free_slot: &mut usize,
+        slot_mgr: &mut SlotManager,
         vspace: &mut VSpaceManager,
     ) -> Result<(usize, usize), Error> {
         let elf = ElfFile::new(elf_data).map_err(|_| Error::InvalidParam)?;
@@ -534,9 +506,7 @@ impl<'a> ProcessManager<'a> {
 
             for page_vaddr in (start_page..end_page).step_by(PGSIZE) {
                 // Alloc Frame in Factotum
-                let slot = *free_slot;
-                *free_slot += 1;
-                let frame_cap = CapPtr::new(slot);
+                let frame_cap = slot_mgr.alloc(resource_mgr)?;
 
                 resource_mgr
                     .alloc(CapType::Frame, 1, root_cnode, frame_cap)
@@ -553,11 +523,7 @@ impl<'a> ProcessManager<'a> {
                         1,
                         resource_mgr,
                         root_cnode,
-                        || {
-                            let s = *free_slot;
-                            *free_slot += 1;
-                            CapPtr::new(s)
-                        },
+                        |rm| slot_mgr.alloc(rm),
                     )
                     .map_err(|_| Error::MappingFailed)?;
 
@@ -576,9 +542,6 @@ impl<'a> ProcessManager<'a> {
                         .copy_from_slice(&elf_data[src_offset..src_offset + copy_len]);
                 }
                 // Clear shadow entry for SCRATCH_VA
-                // Assuming we can add unmap to VSpaceManager or just clear here by modifying logic?
-                // We don't have access to vspace.shadow here directly if `load_elf` is associated function.
-                // Wait, `load_elf` takes `vspace: &mut VSpaceManager`.
                 vspace.unmap(SCRATCH_VA, 1);
 
                 // Map to Child
@@ -590,11 +553,7 @@ impl<'a> ProcessManager<'a> {
                         1,
                         resource_mgr,
                         root_cnode,
-                        || {
-                            let s = *free_slot;
-                            *free_slot += 1;
-                            CapPtr::new(s)
-                        },
+                        |rm| slot_mgr.alloc(rm),
                     )
                     .map_err(|_| Error::MappingFailed)?;
             }
