@@ -10,14 +10,13 @@ use glenda::arch::mem::PGSIZE;
 use glenda::cap::{CNode, CapPtr, CapType, Endpoint, Frame, Reply, Rights, TCB, VSpace};
 use glenda::cap::{CONSOLE_CAP, CONSOLE_SLOT, VSPACE_CAP};
 use glenda::error::Error;
-use glenda::ipc::MsgTag;
 use glenda::ipc::utcb;
+use glenda::ipc::{MsgFlags, MsgTag};
 use glenda::mem::Perms;
 use glenda::mem::{ENTRY_VA, HEAP_VA, STACK_VA};
 use glenda::protocol::process as proto;
 use glenda::runtime::initrd::Initrd;
-const SERIVCE_PRIORITY: u8 = 252;
-
+const SERVICE_PRIORITY: u8 = 252;
 const REPLY_SLOT: usize = 100;
 
 pub struct ProcessManager<'a> {
@@ -93,7 +92,14 @@ impl<'a> ProcessManager<'a> {
             let utcb = unsafe { utcb::get() };
             let msg_info = utcb.msg_tag;
             let label = msg_info.label();
+            let proto = msg_info.proto();
             let args = utcb.mrs_regs;
+
+            if proto != proto::PROCESS_PROTO {
+                // Invalid protocol
+                self.reply_err(Error::InvalidProtocol);
+                continue;
+            }
 
             // Dispatch
             let result = self.dispatch(badge, label, &args);
@@ -118,14 +124,14 @@ impl<'a> ProcessManager<'a> {
         let utcb = unsafe { utcb::get() };
         utcb.mrs_regs[0] = 0; // OK
         utcb.mrs_regs[1] = val;
-        let tag = MsgTag::new(0, 2);
+        let tag = MsgTag::new(0, 2, MsgFlags::NONE);
         self.reply_cap.reply(tag, [0; 7]);
     }
 
     fn reply_err(&self, err: Error) {
         let utcb = unsafe { utcb::get() };
         utcb.mrs_regs[0] = err as usize;
-        let tag = MsgTag::new(0, 1);
+        let tag = MsgTag::new(0, 1, MsgFlags::NONE);
         self.reply_cap.reply(tag, [0; 7]);
     }
 
@@ -209,32 +215,6 @@ impl<'a> ProcessManager<'a> {
             ret
         };
 
-        // 5. Stack Allocation (Simple 16KB stack)
-        const STACK_BASE: usize = 0x10000000;
-        const STACK_SIZE: usize = 4 * PGSIZE;
-        for i in 0..4 {
-            let frame_slot = self.alloc_slot();
-            self.resource_mgr
-                .alloc(CapType::Frame, 1, self.root_cnode, frame_slot)
-                .map_err(|_| Error::UntypeOOM)?;
-            let frame = Frame::from(frame_slot);
-            vspace_mgr
-                .map_frame(
-                    frame,
-                    STACK_BASE + i * PGSIZE,
-                    Perms::READ | Perms::WRITE | Perms::USER,
-                    1,
-                    &mut self.resource_mgr,
-                    self.root_cnode,
-                    || {
-                        let slot = self.free_slot;
-                        self.free_slot += 1;
-                        CapPtr::new(slot)
-                    },
-                )
-                .map_err(|_| Error::MappingFailed)?;
-        }
-
         // 6. Setup Console
         child_cnode.copy(CONSOLE_CAP.cap(), CONSOLE_SLOT, Rights::ALL);
 
@@ -254,7 +234,7 @@ impl<'a> ProcessManager<'a> {
         );
 
         child_tcb.set_registers(entry_point, STACK_VA);
-        child_tcb.set_priority(SERIVCE_PRIORITY);
+        child_tcb.set_priority(SERVICE_PRIORITY);
         child_tcb.resume();
 
         let mut process = Process::new(pid, 0, name.to_string(), child_tcb, child_pd, child_cnode);
