@@ -8,14 +8,15 @@ use alloc::collections::BTreeMap;
 use alloc::string::{String, ToString};
 use glenda::arch::mem::PGSIZE;
 use glenda::cap::{CNode, CapPtr, CapType, Endpoint, Frame, Reply, Rights, TCB, VSpace};
-use glenda::cap::{CONSOLE_CAP, CONSOLE_SLOT, VSPACE_CAP};
-use glenda::error::Error;
+use glenda::cap::{CONSOLE_CAP, CONSOLE_SLOT, CSPACE_SLOT, TCB_SLOT, VSPACE_CAP, VSPACE_SLOT};
+use glenda::error::{Error, code};
 use glenda::ipc::utcb;
 use glenda::ipc::{MsgFlags, MsgTag};
 use glenda::mem::Perms;
 use glenda::mem::{ENTRY_VA, HEAP_VA, STACK_VA};
 use glenda::protocol::process as proto;
 use glenda::runtime::initrd::Initrd;
+use glenda::runtime::{MMIO_CAP, MMIO_SLOT, PLATFORM_CAP, PLATFORM_SLOT};
 const SERVICE_PRIORITY: u8 = 252;
 const REPLY_SLOT: usize = 100;
 
@@ -170,10 +171,10 @@ impl<'a> ProcessManager<'a> {
     }
 
     fn spawn_service_initrd(&mut self, name: String) -> Result<usize, Error> {
-        // 2. Find file in Initrd
+        // 1. Find file in Initrd
         let file = self.initrd.get_file(&name).ok_or(Error::InvalidParam)?;
 
-        // 3. Create Process Structures (allocating in Factotum CNode)
+        // 2. Create Process Structures (allocating in Factotum CNode)
         let cnode_slot = self.alloc_slot();
         self.resource_mgr
             .alloc(CapType::CNode, 0, self.root_cnode, cnode_slot)
@@ -195,7 +196,30 @@ impl<'a> ProcessManager<'a> {
         let pid = self.next_pid;
         self.next_pid += 1;
 
-        // 4. Load ELF
+        // 3. Setup CSpace
+        if child_cnode.copy(child_cnode.cap(), CSPACE_SLOT, Rights::ALL) != code::SUCCESS {
+            return Err(Error::CNodeFull);
+        }
+        if child_cnode.copy(child_pd.cap(), VSPACE_SLOT, Rights::ALL) != code::SUCCESS {
+            return Err(Error::CNodeFull);
+        }
+        if child_cnode.copy(child_tcb.cap(), TCB_SLOT, Rights::ALL) != code::SUCCESS {
+            return Err(Error::CNodeFull);
+        }
+        if child_cnode.copy(CONSOLE_CAP.cap(), CONSOLE_SLOT, Rights::ALL) != code::SUCCESS {
+            return Err(Error::CNodeFull);
+        }
+        if child_cnode.copy(PLATFORM_CAP.cap(), PLATFORM_SLOT, Rights::ALL) != code::SUCCESS {
+            return Err(Error::CNodeFull);
+        }
+        if child_cnode.copy(MMIO_CAP.cap(), MMIO_SLOT, Rights::ALL) != code::SUCCESS {
+            return Err(Error::CNodeFull);
+        }
+        if child_cnode.mint(self.endpoint.cap(), ENDPOINT_SLOT, pid, Rights::ALL) != code::SUCCESS {
+            return Err(Error::CNodeFull);
+        }
+
+        // 4. Init child VSpace
         let mut vspace_mgr = VSpaceManager::new(child_pd);
 
         // We need to pass free_slot ref to avoid closure borrow issues
@@ -214,16 +238,6 @@ impl<'a> ProcessManager<'a> {
             self.free_slot = free_slot_counter;
             ret
         };
-
-        // 6. Setup Console
-        child_cnode.copy(CONSOLE_CAP.cap(), CONSOLE_SLOT, Rights::ALL);
-
-        // 7. Start TCB
-        if child_cnode.mint(self.endpoint.cap(), ENDPOINT_SLOT, pid, Rights::ALL) != 0 {
-            return Err(Error::CNodeFull);
-        }
-
-        child_cnode.debug_print();
 
         child_tcb.configure(
             child_cnode,
@@ -417,7 +431,7 @@ impl<'a> ProcessManager<'a> {
             // Simple bump allocator for mmap area?
             // Or use heap_brk + offset?
             // Lets assume high memory 0x40000000
-            0x40000000 + process.heap_brk // Hack
+            HEAP_VA + process.heap_brk // Hack
         } else {
             msg_addr
         };
@@ -509,6 +523,15 @@ impl<'a> ProcessManager<'a> {
             let start_page = vaddr & !(PGSIZE - 1);
             let end_page = (vaddr + mem_size + PGSIZE - 1) & !(PGSIZE - 1);
 
+            log!(
+                "Loading segment: vaddr=0x{:x}, mem_size=0x{:x}, file_size=0x{:x}, offset=0x{:x}, perms={:?}",
+                vaddr,
+                mem_size,
+                file_size,
+                offset,
+                perms
+            );
+
             for page_vaddr in (start_page..end_page).step_by(PGSIZE) {
                 // Alloc Frame in Factotum
                 let slot = *free_slot;
@@ -552,22 +575,6 @@ impl<'a> ProcessManager<'a> {
                     dest_slice[copy_start..copy_start + copy_len]
                         .copy_from_slice(&elf_data[src_offset..src_offset + copy_len]);
                 }
-
-                // Unmap from self
-                // Manually remove from shadow? Or just map over?
-                // VSpace::unmap works, but VSpaceManager shadow needs update?
-                // VSpaceManager doesn't have explicit unmap yet?
-                // If we don't update shadow, next map_frame thinks it checks correctly?
-                // Shadow tracks Frame vs Table.
-                // If we map over, it sees Frame there.
-                // But map_frame will Error "Page already mapped" !
-
-                // We need an unmap func in VSpaceManager or just manually clear in shadow.
-                // But since we reuse SCRATCH_VA repeatedly, we MUST unmap from VSpaceManager.
-                // Let's implement unmap in VSpaceManager or cheat by clearing shadow.
-
-                // For now, assume VSPACE_CAP unmap works, but we also clear shadow entry.
-                VSPACE_CAP.unmap(SCRATCH_VA, 1 * PGSIZE);
                 // Clear shadow entry for SCRATCH_VA
                 // Assuming we can add unmap to VSpaceManager or just clear here by modifying logic?
                 // We don't have access to vspace.shadow here directly if `load_elf` is associated function.

@@ -1,10 +1,11 @@
 use glenda::arch::mem::PGSIZE;
+use glenda::cap::FAULT_SLOT;
 use glenda::cap::{CapPtr, Endpoint, Reply};
 
 /// Virtual Address where Initrd is mapped in Root Task
 pub const SCRATCH_VA2: usize = SCRATCH_VA + PGSIZE;
 pub const SCRATCH_VA: usize = 0x3000_0000;
-pub const ENDPOINT_SLOT: usize = 10;
+pub const ENDPOINT_SLOT: usize = FAULT_SLOT;
 pub const RECV_SLOT: usize = 30;
 pub const REPLY_SLOT: usize = 100;
 
