@@ -4,18 +4,19 @@
 
 extern crate alloc;
 use glenda;
-use glenda::initrd::Initrd;
-use glenda::manifest::Manifest;
 
-mod ipc;
+mod bootinfo;
+mod elf;
+mod initrd;
 mod layout;
 mod manager;
 mod process;
-mod spawn;
 
-use layout::{FACTOTUM_ENDPOINT_SLOT, INITRD_VA};
-use manager::ResourceManager;
-use process::ProcessManager;
+use bootinfo::BootInfo;
+use glenda::cap::CSPACE_CAP;
+use initrd::Initrd;
+use layout::{BOOTINFO_VA, ENDPOINT_CAP, INITRD_VA};
+use manager::{ProcessManager, ResourceManager};
 
 #[macro_export]
 macro_rules! log {
@@ -26,7 +27,7 @@ macro_rules! log {
 
 #[unsafe(no_mangle)]
 fn main() -> usize {
-    log!("Starting...");
+    log!("Starting Factotum Manager...");
 
     // Parse Initrd
     let total_size_ptr = (INITRD_VA + 8) as *const u32;
@@ -35,17 +36,20 @@ fn main() -> usize {
     let initrd = Initrd::new(initrd_slice).expect("Factotum: Failed to parse initrd");
     log!("Initrd parsed. Size: {} KB", total_size / 1024);
 
-    let pm = ProcessManager::new();
-    let rm = ResourceManager::new();
-    // Find Manifest
-    let manifest = if let Some(data) = initrd.get_file("manifest") {
-        Manifest::parse(data).expect("Failed to parse manifest")
-    } else {
-        panic!("Manifest not found in initrd")
-    };
+    // Parse BootInfo
+    let bootinfo = unsafe { &*(BOOTINFO_VA as *const BootInfo) };
+    if bootinfo.magic != bootinfo::BOOTINFO_MAGIC {
+        log!("Invalid BootInfo Magic: {:#x}", bootinfo.magic);
+        return 1;
+    }
+    log!("BootInfo parsed: {}", bootinfo);
 
-    log!("Listening on endpoint {}", FACTOTUM_ENDPOINT_SLOT);
+    // Init Resource Manager
+    let resource_mgr = ResourceManager::new(bootinfo);
 
-    ipc::dispatch_loop(pm, rm, manifest, initrd, initrd_slice);
-    1
+    // Initialize Factotum Manager
+    let mut manager = ProcessManager::new(CSPACE_CAP, ENDPOINT_CAP, resource_mgr, initrd);
+
+    log!("Entering main loop");
+    manager.run();
 }

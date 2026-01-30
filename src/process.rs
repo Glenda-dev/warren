@@ -1,112 +1,52 @@
-use alloc::collections::BTreeMap;
+use crate::manager::VSpaceManager;
 use alloc::string::String;
-use glenda::cap::{CNode, Frame, PageTable, TCB};
+use glenda::cap::{CNode, TCB, VSpace};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ThreadState {
-    Running,
-    Blocked, // For Futex or Join
-    Dead,
-}
-
-pub struct Thread {
-    pub tid: usize,
-    pub tcb: TCB, // Capability to the TCB in Factotum's CSpace
-    pub state: ThreadState,
-    pub wait_tid: Option<usize>,   // If blocked on join
-    pub futex_addr: Option<usize>, // If blocked on futex
-}
-
+/// Process Control Block in Factotum
 pub struct Process {
     pub pid: usize,
-    pub ppid: usize,
+    pub parent_pid: usize,
     pub name: String,
-    pub cspace: CNode,
-    pub vspace: PageTable,
-    pub tcb: TCB, // Main thread TCB
-    pub threads: BTreeMap<usize, Thread>,
-    pub frames: BTreeMap<usize, Frame>, // Allocated frames
-    pub next_tid: usize,
-    // Add more fields as needed (e.g., memory regions)
+
+    // Capabilities
+    pub tcb: TCB,
+    pub vspace: VSpace, // Root VSpace
+    pub cnode: CNode,   // Root CNode
+
+    // State
+    pub state: ProcessState,
+    pub exit_code: usize,
+    // Manage process mappings
+    pub vspace_mgr: VSpaceManager,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ProcessState {
+    Running,
+    Sleeping,
+    Suspended,
+    Dead,
 }
 
 impl Process {
     pub fn new(
         pid: usize,
-        ppid: usize,
+        parent_pid: usize,
         name: String,
-        cspace: CNode,
-        vspace: PageTable,
         tcb: TCB,
+        vspace: VSpace,
+        cnode: CNode,
     ) -> Self {
         Self {
             pid,
-            ppid,
+            parent_pid,
             name,
-            cspace,
-            vspace,
             tcb,
-            threads: BTreeMap::new(),
-            frames: BTreeMap::new(),
-            next_tid: 1,
+            vspace,
+            cnode,
+            state: ProcessState::Suspended, // Starts suspended until scheduled/loaded
+            exit_code: 0,
+            vspace_mgr: VSpaceManager::new(vspace),
         }
-    }
-
-    pub fn add_thread(&mut self, tcb: TCB) -> usize {
-        let tid = self.next_tid;
-        self.next_tid += 1;
-        let thread =
-            Thread { tid, tcb, state: ThreadState::Running, wait_tid: None, futex_addr: None };
-        self.threads.insert(tid, thread);
-        tid
-    }
-
-    pub fn get_thread(&self, tid: usize) -> Option<&Thread> {
-        self.threads.get(&tid)
-    }
-
-    pub fn get_thread_mut(&mut self, tid: usize) -> Option<&mut Thread> {
-        self.threads.get_mut(&tid)
-    }
-
-    pub fn remove_thread(&mut self, tid: usize) -> Option<Thread> {
-        self.threads.remove(&tid)
-    }
-}
-
-pub struct ProcessManager {
-    processes: BTreeMap<usize, Process>,
-    next_pid: usize,
-    // Map badge (which is unique per process/thread connection) to (pid, tid)
-    // For now, assuming badge == pid for simplicity as per previous code,
-    // but for threads we might need a better mapping if they share the endpoint.
-    // Or maybe badge encodes pid.
-}
-
-impl ProcessManager {
-    pub fn new() -> Self {
-        Self { processes: BTreeMap::new(), next_pid: 1 }
-    }
-
-    pub fn allocate_pid(&mut self) -> usize {
-        let pid = self.next_pid;
-        self.next_pid += 1;
-        pid
-    }
-
-    pub fn add_process(&mut self, process: Process) {
-        self.processes.insert(process.pid, process);
-    }
-
-    pub fn get_process(&self, pid: usize) -> Option<&Process> {
-        self.processes.get(&pid)
-    }
-
-    pub fn get_process_mut(&mut self, pid: usize) -> Option<&mut Process> {
-        self.processes.get_mut(&pid)
-    }
-
-    pub fn remove_process(&mut self, pid: usize) -> Option<Process> {
-        self.processes.remove(&pid)
     }
 }
