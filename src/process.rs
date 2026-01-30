@@ -18,6 +18,8 @@ pub struct Process {
     pub exit_code: usize,
     // Manage process mappings
     pub vspace_mgr: VSpaceManager,
+    pub heap_start: usize,
+    pub heap_brk: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -47,6 +49,8 @@ impl Process {
             state: ProcessState::Suspended, // Starts suspended until scheduled/loaded
             exit_code: 0,
             vspace_mgr: VSpaceManager::new(vspace),
+            heap_start: 0,
+            heap_brk: 0,
         }
     }
 }
