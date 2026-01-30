@@ -1,4 +1,4 @@
-use glenda::cap::UNTYPED_SLOT;
+use glenda::cap::{CNODE_PAGES, UNTYPED_SLOT};
 use glenda::cap::{CNode, CapPtr, CapType, Untyped};
 use glenda::error::code;
 use glenda::runtime::bootinfo::{BootInfo, UntypedRegion};
@@ -35,6 +35,7 @@ impl ResourceManager {
         match obj_type {
             CapType::Untyped => flags,
             CapType::Frame => flags,
+            CapType::CNode => CNODE_PAGES,
             _ => 1,
         }
     }
@@ -63,7 +64,7 @@ impl ResourceManager {
                         CapType::PageTable => {
                             block.cap.retype_pagetable(flags, 1, dest_cnode, dest_slot)
                         }
-                        CapType::CNode => block.cap.retype_cnode(1, dest_cnode, dest_slot),
+                        CapType::CNode => block.cap.retype_cnode(flags, 1, dest_cnode, dest_slot),
                         CapType::Frame => block.cap.retype_frame(flags, 1, dest_cnode, dest_slot),
                         CapType::VSpace => block.cap.retype_vspace(1, dest_cnode, dest_slot),
                         CapType::Endpoint => block.cap.retype_endpoint(1, dest_cnode, dest_slot),

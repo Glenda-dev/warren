@@ -7,7 +7,8 @@ use crate::process::{Process, ProcessState};
 use alloc::collections::BTreeMap;
 use alloc::string::{String, ToString};
 use glenda::arch::mem::PGSIZE;
-use glenda::cap::{CNode, CapPtr, CapType, Endpoint, Frame, Reply, TCB, VSPACE_CAP, VSpace};
+use glenda::cap::{CNode, CapPtr, CapType, Endpoint, Frame, Reply, Rights, TCB, VSpace};
+use glenda::cap::{CONSOLE_CAP, CONSOLE_SLOT, ROOT_CSPACE_GUARD, VSPACE_CAP};
 use glenda::error::Error;
 use glenda::ipc::MsgTag;
 use glenda::ipc::utcb;
@@ -15,6 +16,7 @@ use glenda::mem::Perms;
 use glenda::mem::{ENTRY_VA, HEAP_VA, STACK_VA};
 use glenda::protocol::process as proto;
 use glenda::runtime::initrd::Initrd;
+const SERIVCE_PRIORITY: u8 = 252;
 
 const REPLY_SLOT: usize = 100;
 
@@ -168,7 +170,7 @@ impl<'a> ProcessManager<'a> {
         // 3. Create Process Structures (allocating in Factotum CNode)
         let cnode_slot = self.alloc_slot();
         self.resource_mgr
-            .alloc(CapType::CNode, 64, self.root_cnode, cnode_slot)
+            .alloc(CapType::CNode, ROOT_CSPACE_GUARD, self.root_cnode, cnode_slot)
             .map_err(|_| Error::UntypeOOM)?;
         let child_cnode = CNode::from(cnode_slot);
 
@@ -233,10 +235,15 @@ impl<'a> ProcessManager<'a> {
                 .map_err(|_| Error::MappingFailed)?;
         }
 
-        // 6. Start TCB
-        if child_cnode.mint(self.endpoint.cap(), ENDPOINT_SLOT, pid, 255) != 0 {
+        // 6. Setup Console
+        child_cnode.copy(CONSOLE_CAP.cap(), CONSOLE_SLOT, Rights::ALL);
+
+        // 7. Start TCB
+        if child_cnode.mint(self.endpoint.cap(), ENDPOINT_SLOT, pid, Rights::ALL) != 0 {
             return Err(Error::CNodeFull);
         }
+
+        child_cnode.debug_print();
 
         child_tcb.configure(
             child_cnode,
@@ -247,6 +254,7 @@ impl<'a> ProcessManager<'a> {
         );
 
         child_tcb.set_registers(entry_point, STACK_VA);
+        child_tcb.set_priority(SERIVCE_PRIORITY);
         child_tcb.resume();
 
         let mut process = Process::new(pid, 0, name.to_string(), child_tcb, child_pd, child_cnode);
@@ -317,7 +325,7 @@ impl<'a> ProcessManager<'a> {
             .map_err(|_| Error::UntypeOOM)?;
 
         // Mint Endpoint
-        if child_cnode.mint(self.endpoint.cap(), ENDPOINT_SLOT, pid, 255) != 0 {
+        if child_cnode.mint(self.endpoint.cap(), ENDPOINT_SLOT, pid, Rights::ALL) != 0 {
             return Err(Error::CNodeFull);
         }
 
