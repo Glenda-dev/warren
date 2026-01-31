@@ -1,11 +1,12 @@
 use super::{ResourceManager, SlotManager, VSpaceManager};
 use crate::elf::{ElfFile, PF_W, PF_X, PT_LOAD};
 use crate::layout::INIT_NAME;
-use crate::layout::{ENDPOINT_SLOT, REPLY_CAP, SCRATCH_VA, SCRATCH_VA2};
+use crate::layout::{ENDPOINT_SLOT, REPLY_CAP, SCRATCH_VA};
 use crate::log;
 use crate::process::{Process, ProcessState};
 use alloc::collections::BTreeMap;
 use alloc::string::{String, ToString};
+use glenda::arch::mem::KSTACK_PAGES;
 use glenda::arch::mem::PGSIZE;
 use glenda::cap::{CNode, CapPtr, CapType, Endpoint, Frame, Reply, Rights, TCB, VSpace};
 use glenda::cap::{CSPACE_SLOT, TCB_SLOT, VSPACE_CAP, VSPACE_SLOT};
@@ -13,7 +14,7 @@ use glenda::error::{Error, code};
 use glenda::ipc::utcb;
 use glenda::ipc::{MsgFlags, MsgTag};
 use glenda::mem::Perms;
-use glenda::mem::{ENTRY_VA, HEAP_VA, STACK_VA};
+use glenda::mem::{ENTRY_VA, HEAP_VA, STACK_VA, TRAPFRAME_VA, UTCB_VA};
 use glenda::protocol::process as proto;
 use glenda::runtime::initrd::Initrd;
 use glenda::runtime::{KERNEL_SLOT, MMIO_SLOT, PLATFORM_SLOT};
@@ -38,6 +39,7 @@ impl<'a> ProcessManager<'a> {
     pub fn new(
         root_cnode: CNode,
         endpoint: Endpoint,
+        reply: Reply,
         resource_mgr: ResourceManager,
         initrd: Initrd<'a>,
     ) -> Self {
@@ -49,17 +51,21 @@ impl<'a> ProcessManager<'a> {
         vspace.mark_existing(STACK_VA);
         // 3. Heap
         vspace.mark_existing(HEAP_VA);
+        // 4. UTCB
+        vspace.mark_existing(UTCB_VA);
+        // 5. TrapFrame
+        vspace.mark_existing(TRAPFRAME_VA);
 
         Self {
             processes: BTreeMap::new(),
             next_pid: 1,
             root_cnode,
             endpoint,
-            reply_cap: REPLY_CAP,
+            reply_cap: reply,
             vspace,
             resource_mgr,
             initrd,
-            slot_mgr: SlotManager::new(root_cnode, 101),
+            slot_mgr: SlotManager::new(root_cnode, 16),
         }
     }
 
@@ -68,6 +74,10 @@ impl<'a> ProcessManager<'a> {
     }
 
     pub fn init(&mut self) -> Result<(), Error> {
+        // Allocated caps
+        self.resource_mgr
+            .alloc(CapType::Endpoint, 0, self.root_cnode, self.endpoint.cap())
+            .map_err(|_| Error::InvalidCap)?;
         // Init 9ball (Init/Root service)
         match self.spawn_service_initrd(INIT_NAME.to_string()) {
             Ok(pid) => {
@@ -188,6 +198,24 @@ impl<'a> ProcessManager<'a> {
             .map_err(|_| Error::UntypeOOM)?;
         let child_tcb = TCB::from(tcb_slot);
 
+        let utcb_slot = self.alloc_slot()?;
+        self.resource_mgr
+            .alloc(CapType::Frame, 1, self.root_cnode, utcb_slot)
+            .map_err(|_| Error::UntypeOOM)?;
+        let child_utcb = Frame::from(utcb_slot);
+
+        let trapframe_slot = self.alloc_slot()?;
+        self.resource_mgr
+            .alloc(CapType::Frame, 1, self.root_cnode, trapframe_slot)
+            .map_err(|_| Error::UntypeOOM)?;
+        let child_trapframe = Frame::from(trapframe_slot);
+
+        let kstack_slot = self.alloc_slot()?;
+        self.resource_mgr
+            .alloc(CapType::Frame, KSTACK_PAGES, self.root_cnode, kstack_slot)
+            .map_err(|_| Error::UntypeOOM)?;
+        let child_kstack = Frame::from(kstack_slot);
+
         let pid = self.next_pid;
         self.next_pid += 1;
 
@@ -217,6 +245,34 @@ impl<'a> ProcessManager<'a> {
         // 4. Init child VSpace
         let mut vspace_mgr = VSpaceManager::new(child_pd);
 
+        child_tcb.configure(child_cnode, child_pd, child_utcb, child_trapframe, child_kstack);
+
+        // Map UTCB and Trapframe into user vspace
+        vspace_mgr
+            .map_frame(
+                child_utcb,
+                UTCB_VA,
+                Perms::READ | Perms::WRITE | Perms::USER,
+                1,
+                &mut self.resource_mgr,
+                self.root_cnode,
+                |rm| self.slot_mgr.alloc(rm),
+            )
+            .map_err(|_| Error::MappingFailed)?;
+
+        vspace_mgr
+            .map_frame(
+                child_trapframe,
+                TRAPFRAME_VA,
+                Perms::READ | Perms::WRITE,
+                1,
+                &mut self.resource_mgr,
+                self.root_cnode,
+                |rm| self.slot_mgr.alloc(rm),
+            )
+            .map_err(|_| Error::MappingFailed)?;
+        vspace_mgr.setup()?;
+
         let (entry_point, heap_start) = Self::load_elf(
             &file,
             &mut vspace_mgr,
@@ -226,22 +282,15 @@ impl<'a> ProcessManager<'a> {
             &mut self.vspace,
         )?;
 
-        child_tcb.configure(
-            child_cnode,
-            child_pd,
-            Frame::from(CapPtr::from(0)),
-            Frame::from(CapPtr::from(0)),
-            Frame::from(CapPtr::from(0)),
-        );
-
         child_tcb.set_registers(entry_point, STACK_VA);
         child_tcb.set_priority(SERVICE_PRIORITY);
-        child_tcb.resume();
 
         let mut process = Process::new(pid, 0, name.to_string(), child_tcb, child_pd, child_cnode);
         process.heap_start = heap_start;
         process.heap_brk = heap_start;
         self.processes.insert(pid, process);
+
+        child_tcb.resume();
 
         Ok(pid)
     }
@@ -249,7 +298,7 @@ impl<'a> ProcessManager<'a> {
     fn fork_process(&mut self, parent_pid: usize) -> Result<usize, Error> {
         let (heap_start, heap_brk, name) = {
             let p = self.processes.get(&parent_pid).ok_or(Error::InvalidParam)?;
-            (p.heap_start, p.heap_brk, p.name.clone() + "(child)")
+            (p.heap_start, p.heap_brk, p.name.clone())
         };
 
         // Alloc child resources
@@ -274,7 +323,26 @@ impl<'a> ProcessManager<'a> {
             .map_err(|_| Error::UntypeOOM)?;
         let child_tcb = TCB::from(tcb_slot);
 
-        let mut _child_vspace_mgr = VSpaceManager::new(child_pd);
+        let utcb_slot = self.alloc_slot()?;
+        self.resource_mgr
+            .alloc(CapType::Frame, 1, self.root_cnode, utcb_slot)
+            .map_err(|_| Error::UntypeOOM)?;
+        let child_utcb = Frame::from(utcb_slot);
+
+        let trapframe_slot = self.alloc_slot()?;
+        self.resource_mgr
+            .alloc(CapType::Frame, 1, self.root_cnode, trapframe_slot)
+            .map_err(|_| Error::UntypeOOM)?;
+        let child_trapframe = Frame::from(trapframe_slot);
+
+        let kstack_slot = self.alloc_slot()?;
+        self.resource_mgr
+            .alloc(CapType::Frame, KSTACK_PAGES, self.root_cnode, kstack_slot)
+            .map_err(|_| Error::UntypeOOM)?;
+        let child_kstack = Frame::from(kstack_slot);
+
+        let mut child_vspace_mgr = VSpaceManager::new(child_pd);
+        child_vspace_mgr.setup()?;
 
         // unsafe workaround for double borrow
         let res_mgr_ptr = &mut self.resource_mgr as *mut ResourceManager;
@@ -286,8 +354,7 @@ impl<'a> ProcessManager<'a> {
 
         let mut get_slot = |rm: &mut ResourceManager| unsafe { (&mut *slot_mgr_ptr).alloc(rm) };
 
-        let mut child_vspace_mgr = VSpaceManager::new(child_pd);
-
+        // TODO:Fix this
         parent
             .vspace_mgr
             .clone_space(
@@ -296,24 +363,43 @@ impl<'a> ProcessManager<'a> {
                 root_cnode,
                 &mut get_slot,
                 SCRATCH_VA,
-                SCRATCH_VA2,
+                SCRATCH_VA + PGSIZE,
                 unsafe { &mut *vspace_ptr },
             )
             .map_err(|_| Error::UntypeOOM)?;
+
+        // Map UTCB and Trapframe into child vspace
+        child_vspace_mgr
+            .map_frame(
+                child_utcb,
+                UTCB_VA,
+                Perms::READ | Perms::WRITE | Perms::USER,
+                1,
+                unsafe { &mut *res_mgr_ptr },
+                root_cnode,
+                &mut get_slot,
+            )
+            .map_err(|_| Error::MappingFailed)?;
+
+        child_vspace_mgr
+            .map_frame(
+                child_trapframe,
+                TRAPFRAME_VA,
+                Perms::READ | Perms::WRITE,
+                1,
+                unsafe { &mut *res_mgr_ptr },
+                root_cnode,
+                &mut get_slot,
+            )
+            .map_err(|_| Error::MappingFailed)?;
 
         // Mint Endpoint
         if child_cnode.mint(self.endpoint.cap(), ENDPOINT_SLOT, pid, Rights::ALL) != 0 {
             return Err(Error::CNodeFull);
         }
 
-        // Configure TCB - Minimal config
-        child_tcb.configure(
-            child_cnode,
-            child_pd,
-            Frame::from(CapPtr::from(0)),
-            Frame::from(CapPtr::from(0)),
-            Frame::from(CapPtr::from(0)),
-        );
+        // Configure TCB
+        child_tcb.configure(child_cnode, child_pd, child_utcb, child_trapframe, child_kstack);
 
         let mut process = Process::new(pid, parent_pid, name, child_tcb, child_pd, child_cnode);
         process.heap_start = heap_start;
@@ -458,7 +544,6 @@ impl<'a> ProcessManager<'a> {
 
         Ok(0)
     }
-
     fn load_elf(
         elf_data: &[u8],
         dest_mgr: &mut VSpaceManager,
@@ -494,69 +579,63 @@ impl<'a> ProcessManager<'a> {
 
             let start_page = vaddr & !(PGSIZE - 1);
             let end_page = (vaddr + mem_size + PGSIZE - 1) & !(PGSIZE - 1);
+            let num_pages = (end_page - start_page) / PGSIZE;
 
-            log!(
-                "Loading segment: vaddr=0x{:x}, mem_size=0x{:x}, file_size=0x{:x}, offset=0x{:x}, perms={:?}",
-                vaddr,
-                mem_size,
-                file_size,
-                offset,
-                perms
-            );
+            log!("Loading segment: vaddr=0x{:x}, pages={}, perms={:?}", vaddr, num_pages, perms);
 
-            for page_vaddr in (start_page..end_page).step_by(PGSIZE) {
-                // Alloc Frame in Factotum
-                let frame_cap = slot_mgr.alloc(resource_mgr)?;
+            // 1. 一次性申请多页 Frame
+            let frame_cap = slot_mgr.alloc(resource_mgr)?;
+            resource_mgr
+                .alloc(CapType::Frame, num_pages, root_cnode, frame_cap)
+                .map_err(|_| Error::UntypeOOM)?;
+            let frame = Frame::from(frame_cap);
 
-                resource_mgr
-                    .alloc(CapType::Frame, 1, root_cnode, frame_cap)
-                    .map_err(|_| Error::UntypeOOM)?;
-                let frame = Frame::from(frame_cap);
+            // 2. 将整个多页 Frame 映射到子进程
+            dest_mgr
+                .map_frame(
+                    frame,
+                    start_page,
+                    perms.clone(),
+                    num_pages,
+                    resource_mgr,
+                    root_cnode,
+                    |rm| slot_mgr.alloc(rm),
+                )
+                .map_err(|_| Error::MappingFailed)?;
 
-                // Map to Self (Scratch) using vspace manager
-                // Note: We use SCRATCH_VA. vspace must know about existing PTs to avoid re-mapping.
-                vspace
-                    .map_frame(
-                        frame,
-                        SCRATCH_VA,
-                        Perms::READ | Perms::WRITE,
-                        1,
-                        resource_mgr,
-                        root_cnode,
-                        |rm| slot_mgr.alloc(rm),
-                    )
-                    .map_err(|_| Error::MappingFailed)?;
+            let temp_vaddr = SCRATCH_VA;
 
-                // Copy Data
-                let dest_slice =
-                    unsafe { core::slice::from_raw_parts_mut(SCRATCH_VA as *mut u8, PGSIZE) };
-                dest_slice.fill(0);
+            vspace
+                .map_frame(
+                    frame,
+                    temp_vaddr,
+                    Perms::READ | Perms::WRITE | Perms::USER,
+                    num_pages, // 这里必须传入正确的页数，以便更新 Shadow Page Table 并检查冲突
+                    resource_mgr,
+                    root_cnode,
+                    |rm| slot_mgr.alloc(rm),
+                )
+                .map_err(|_| Error::MappingFailed)?;
 
-                let offset_in_segment = page_vaddr.saturating_sub(vaddr);
-                if offset_in_segment < file_size {
-                    let copy_start = if page_vaddr < vaddr { vaddr - page_vaddr } else { 0 };
-                    let copy_len =
-                        core::cmp::min(PGSIZE - copy_start, file_size - offset_in_segment);
-                    let src_offset = offset + offset_in_segment + copy_start;
-                    dest_slice[copy_start..copy_start + copy_len]
-                        .copy_from_slice(&elf_data[src_offset..src_offset + copy_len]);
-                }
-                // Clear shadow entry for SCRATCH_VA
-                vspace.unmap(SCRATCH_VA, 1);
+            let dest_slice = unsafe {
+                core::slice::from_raw_parts_mut(temp_vaddr as *mut u8, num_pages * PGSIZE)
+            };
+            dest_slice.fill(0);
 
-                // Map to Child
-                dest_mgr
-                    .map_frame(
-                        frame,
-                        page_vaddr,
-                        perms.clone(),
-                        1,
-                        resource_mgr,
-                        root_cnode,
-                        |rm| slot_mgr.alloc(rm),
-                    )
-                    .map_err(|_| Error::MappingFailed)?;
+            // 计算段数据在 allocated frame 中的偏移
+            let padding = vaddr - start_page;
+
+            if padding < dest_slice.len() {
+                let bytes_to_copy = core::cmp::min(file_size, dest_slice.len() - padding);
+                // 确保 elf_data 读取不越界
+                let src_end = core::cmp::min(offset + bytes_to_copy, elf_data.len());
+                let actual_copy = src_end.saturating_sub(offset);
+
+                dest_slice[padding..padding + actual_copy]
+                    .copy_from_slice(&elf_data[offset..offset + actual_copy]);
             }
+
+            vspace.unmap(temp_vaddr, num_pages);
         }
 
         let heap_start = (max_vaddr + PGSIZE - 1) & !(PGSIZE - 1);

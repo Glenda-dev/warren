@@ -15,7 +15,7 @@ use glenda::runtime::BOOTINFO_VA;
 use glenda::runtime::bootinfo;
 use glenda::runtime::bootinfo::BootInfo;
 use glenda::runtime::initrd::Initrd;
-use layout::ENDPOINT_CAP;
+use layout::{ENDPOINT_CAP, REPLY_CAP};
 use manager::{ProcessManager, ResourceManager};
 
 #[macro_export]
@@ -55,7 +55,8 @@ fn main() -> usize {
     let resource_mgr = ResourceManager::new(bootinfo);
 
     // Initialize Factotum Manager
-    let mut manager = ProcessManager::new(CSPACE_CAP, ENDPOINT_CAP, resource_mgr, initrd);
+    let mut manager =
+        ProcessManager::new(CSPACE_CAP, ENDPOINT_CAP, REPLY_CAP, resource_mgr, initrd);
 
     if let Err(e) = manager.init() {
         log!("Failed to init system: {:?}", e);

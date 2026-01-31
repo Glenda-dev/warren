@@ -1,6 +1,7 @@
 use crate::manager::VSpaceManager;
 use alloc::string::String;
-use glenda::cap::{CNode, TCB, VSpace};
+use alloc::vec::Vec;
+use glenda::cap::{CNode, CapPtr, TCB, VSpace};
 
 /// Process Control Block in Factotum
 pub struct Process {
@@ -20,6 +21,8 @@ pub struct Process {
     pub vspace_mgr: VSpaceManager,
     pub heap_start: usize,
     pub heap_brk: usize,
+
+    pub allocated_slots: Vec<CapPtr>, // 记录 Factotum 为此进程占用的所有槽位
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -50,6 +53,7 @@ impl Process {
             exit_code: 0,
             vspace_mgr: VSpaceManager::new(vspace),
             heap_start: 0,
+            allocated_slots: Vec::new(),
             heap_brk: 0,
         }
     }

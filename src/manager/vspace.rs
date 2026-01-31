@@ -3,7 +3,7 @@ use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use glenda::arch::mem::{PGSIZE, SHIFTS, VPN_MASK};
 use glenda::cap::{CNode, CapPtr, CapType, Frame, PageTable, VSpace};
-use glenda::error::Error;
+use glenda::error::{Error, code};
 use glenda::mem::Perms;
 
 #[derive(Debug)]
@@ -26,6 +26,13 @@ pub struct VSpaceManager {
 impl VSpaceManager {
     pub fn new(root: VSpace) -> Self {
         Self { root, shadow: BTreeMap::new() }
+    }
+
+    pub fn setup(&self) -> Result<(), Error> {
+        if self.root.setup() != code::SUCCESS {
+            return Err(Error::MappingFailed);
+        }
+        Ok(())
     }
 
     /// Map a given frame into the VSpace at vaddr using shadow page tables
@@ -112,13 +119,13 @@ impl VSpaceManager {
 
         if !entries.contains_key(&idx) {
             let slot = get_slot(resource_mgr)?;
+            let target_level = level - 1;
             resource_mgr
-                .alloc(CapType::PageTable, level, dest_cnode, slot)
+                .alloc(CapType::PageTable, target_level, dest_cnode, slot)
                 .map_err(|_| Error::UntypeOOM)?;
             let pt = PageTable::from(slot);
-            let target_level = level - 1;
 
-            if pivot_root.map_table(pt, vaddr, target_level) != 0 {
+            if pivot_root.map_table(pt, vaddr, level) != 0 {
                 return Err(Error::MappingFailed);
             }
             entries.insert(idx, Box::new(ShadowNode::new_table(slot)));

@@ -2,6 +2,7 @@ use glenda::cap::{CNODE_BITS, CNODE_PAGES};
 use glenda::cap::{CNode, CapPtr, CapType, Untyped};
 use glenda::error::code;
 use glenda::runtime::UNTYPED_SLOT;
+use glenda::runtime::bootinfo::MAX_UNTYPED_REGIONS;
 use glenda::runtime::bootinfo::{BootInfo, UntypedRegion};
 
 #[derive(Clone, Copy, Debug)]
@@ -11,15 +12,15 @@ pub struct UntypedBlock {
 }
 
 pub struct ResourceManager {
-    blocks: [Option<UntypedBlock>; 64],
+    blocks: [Option<UntypedBlock>; MAX_UNTYPED_REGIONS],
 }
 
 impl ResourceManager {
     pub fn new(bootinfo: &BootInfo) -> Self {
-        let mut blocks = [const { None }; 64];
+        let mut blocks = [const { None }; MAX_UNTYPED_REGIONS];
 
         for i in 0..bootinfo.untyped_count {
-            if i >= 64 {
+            if i >= MAX_UNTYPED_REGIONS {
                 break;
             }
             // Slots in the Untyped CNode start at 1
@@ -79,6 +80,7 @@ impl ResourceManager {
                             // This block is out of memory, try next block
                             continue;
                         }
+                        code::INVALID_SLOT => return Err("Invalid Slot"),
                         _ => {
                             return Err("Unknown error during retype");
                         }
