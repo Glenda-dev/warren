@@ -35,7 +35,7 @@ fn main() -> usize {
         log!("Invalid BootInfo Magic: {:#x}", bootinfo.magic);
         return 1;
     }
-    log!("BootInfo parsed: {}", bootinfo);
+    log!("{}", bootinfo);
 
     // Parse Initrd
     let initrd_start = bootinfo.initrd_start;

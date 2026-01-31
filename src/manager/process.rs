@@ -15,8 +15,9 @@ use glenda::ipc::{MsgFlags, MsgTag};
 use glenda::mem::Perms;
 use glenda::mem::{ENTRY_VA, HEAP_VA, STACK_VA};
 use glenda::protocol::process as proto;
+use glenda::runtime::MMIO_SLOT;
 use glenda::runtime::initrd::Initrd;
-use glenda::runtime::{MMIO_SLOT, PLATFORM_SLOT};
+use glenda::runtime::service::PLATFORM_SLOT;
 const SERVICE_PRIORITY: u8 = 252;
 
 pub struct ProcessManager<'a> {

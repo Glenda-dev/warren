@@ -1,6 +1,7 @@
-use glenda::cap::{CNODE_BITS, CNODE_PAGES, UNTYPED_SLOT};
+use glenda::cap::{CNODE_BITS, CNODE_PAGES};
 use glenda::cap::{CNode, CapPtr, CapType, Untyped};
 use glenda::error::code;
+use glenda::runtime::UNTYPED_SLOT;
 use glenda::runtime::bootinfo::{BootInfo, UntypedRegion};
 
 #[derive(Clone, Copy, Debug)]
