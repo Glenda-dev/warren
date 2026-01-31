@@ -8,16 +8,15 @@ use alloc::collections::BTreeMap;
 use alloc::string::{String, ToString};
 use glenda::arch::mem::PGSIZE;
 use glenda::cap::{CNode, CapPtr, CapType, Endpoint, Frame, Reply, Rights, TCB, VSpace};
-use glenda::cap::{CONSOLE_SLOT, CSPACE_SLOT, TCB_SLOT, VSPACE_CAP, VSPACE_SLOT};
+use glenda::cap::{CSPACE_SLOT, TCB_SLOT, VSPACE_CAP, VSPACE_SLOT};
 use glenda::error::{Error, code};
 use glenda::ipc::utcb;
 use glenda::ipc::{MsgFlags, MsgTag};
 use glenda::mem::Perms;
 use glenda::mem::{ENTRY_VA, HEAP_VA, STACK_VA};
 use glenda::protocol::process as proto;
-use glenda::runtime::MMIO_SLOT;
 use glenda::runtime::initrd::Initrd;
-use glenda::runtime::service::PLATFORM_SLOT;
+use glenda::runtime::{KERNEL_SLOT, MMIO_SLOT, PLATFORM_SLOT};
 const SERVICE_PRIORITY: u8 = 252;
 
 pub struct ProcessManager<'a> {
@@ -202,7 +201,7 @@ impl<'a> ProcessManager<'a> {
         if child_cnode.copy(child_tcb.cap(), TCB_SLOT, Rights::ALL) != code::SUCCESS {
             return Err(Error::CNodeFull);
         }
-        if child_cnode.copy(CONSOLE_SLOT, CONSOLE_SLOT, Rights::ALL) != code::SUCCESS {
+        if child_cnode.copy(KERNEL_SLOT, KERNEL_SLOT, Rights::ALL) != code::SUCCESS {
             return Err(Error::CNodeFull);
         }
         if child_cnode.copy(PLATFORM_SLOT, PLATFORM_SLOT, Rights::ALL) != code::SUCCESS {
