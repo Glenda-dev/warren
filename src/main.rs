@@ -9,9 +9,11 @@ mod elf;
 mod layout;
 mod process;
 
-use glenda::cap::CapType;
-use glenda::cap::{CSPACE_CAP, FAULT_CAP, FAULT_SLOT};
-use glenda::manager::{IResourceManager, ResourceManager};
+use glenda::cap::{CSPACE_CAP, MONITOR_CAP, MONITOR_SLOT};
+use glenda::cap::{CapType, VSPACE_CAP};
+use glenda::error::Error;
+use glenda::manager::{IResourceManager, ISystemService};
+use glenda::manager::{ResourceManager, SlotManager, VSpaceManager};
 use glenda::mem::BOOTINFO_VA;
 use glenda::utils::bootinfo;
 use glenda::utils::bootinfo::BootInfo;
@@ -54,20 +56,28 @@ fn main() -> usize {
 
     // Init Resource Manager
     let mut resource_mgr = ResourceManager::new(bootinfo);
+    let mut vspace_mgr = VSpaceManager::new(VSPACE_CAP);
+    let mut slot_mgr = SlotManager::new(CSPACE_CAP, 16);
+
     // Allocated caps
-    if let Err(e) = resource_mgr.alloc(CapType::Endpoint, 0, CSPACE_CAP, FAULT_SLOT) {
+    if let Err(e) = resource_mgr.alloc(CapType::Endpoint, 0, CSPACE_CAP, MONITOR_SLOT) {
         log!("Failed to create endpoint: {:?}", e);
         return 1;
     }
 
     // Initialize Factotum Manager
-    let mut manager = ProcessManager::new(CSPACE_CAP, FAULT_CAP, REPLY_CAP, resource_mgr, initrd);
-
-    if let Err(e) = manager.init() {
-        log!("Failed to init system: {:?}", e);
+    let mut manager =
+        ProcessManager::new(CSPACE_CAP, &mut vspace_mgr, &mut resource_mgr, &mut slot_mgr, initrd);
+    if let Err(e) = load_factotum(&mut manager) {
+        log!("Failed to load: {:?}", e);
         return 1;
     }
+    manager.run().map_err(|e| log!("Exited with error: {:?}", e)).expect("Factotum Manager failed");
+    1
+}
 
-    log!("Entering main loop");
-    manager.run();
+fn load_factotum(manager: &mut ProcessManager) -> Result<(), Error> {
+    manager.listen(MONITOR_CAP, REPLY_CAP)?;
+    manager.init()?;
+    Ok(())
 }
