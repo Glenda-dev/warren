@@ -145,7 +145,13 @@ impl<'a> ProcessManager<'a> {
 
     pub fn run(&mut self) -> ! {
         loop {
-            let badge = self.endpoint.recv(REPLY_CAP.cap());
+            let badge = match self.endpoint.recv(REPLY_CAP.cap()) {
+                Ok(b) => b,
+                Err(e) => {
+                    crate::log!("Recv error: {:?}", e);
+                    continue;
+                }
+            };
             let utcb = unsafe { utcb::get() };
             let msg_info = utcb.msg_tag;
             let label = msg_info.label();
@@ -165,7 +171,7 @@ impl<'a> ProcessManager<'a> {
                     if let Some(name) = name_res {
                         self.spawn(&name).map(Some)
                     } else {
-                        Err(Error::InvalidParam)
+                        Err(Error::InvalidArgs)
                     }
                 }
                 proto::FORK => self.fork(badge).map(Some),
@@ -186,12 +192,12 @@ impl<'a> ProcessManager<'a> {
 
     fn reply_ok(&self, val: usize) {
         let tag = MsgTag::new(0, 2, MsgFlags::NONE);
-        self.reply_cap.reply(tag, [0, val, 0, 0, 0, 0, 0]);
+        let _ = self.reply_cap.reply(tag, [0, val, 0, 0, 0, 0, 0]);
     }
 
     fn reply_err(&self, e: Error) {
         let tag = MsgTag::new(0, 1, MsgFlags::NONE);
-        self.reply_cap.reply(tag, [(e as usize) | 1, 0, 0, 0, 0, 0, 0]);
+        let _ = self.reply_cap.reply(tag, [(e as usize) | 1, 0, 0, 0, 0, 0, 0]);
     }
 
     fn create_inactive_process(&mut self, name: &str) -> Result<Process, Error> {
@@ -222,16 +228,16 @@ impl<'a> ProcessManager<'a> {
         let pid = self.next_pid;
         self.next_pid += 1;
 
-        child_cnode.copy(child_cnode.cap(), CSPACE_SLOT, Rights::ALL);
-        child_cnode.copy(child_pd.cap(), VSPACE_SLOT, Rights::ALL);
-        child_cnode.copy(child_tcb.cap(), TCB_SLOT, Rights::ALL);
-        child_cnode.copy(KERNEL_SLOT, KERNEL_SLOT, Rights::ALL);
-        child_cnode.copy(PLATFORM_SLOT, PLATFORM_SLOT, Rights::ALL);
-        child_cnode.copy(MMIO_SLOT, MMIO_SLOT, Rights::ALL);
-        child_cnode.mint(self.endpoint.cap(), FAULT_SLOT, pid, Rights::ALL);
+        child_cnode.copy(child_cnode.cap(), CSPACE_SLOT, Rights::ALL)?;
+        child_cnode.copy(child_pd.cap(), VSPACE_SLOT, Rights::ALL)?;
+        child_cnode.copy(child_tcb.cap(), TCB_SLOT, Rights::ALL)?;
+        child_cnode.copy(KERNEL_SLOT, KERNEL_SLOT, Rights::ALL)?;
+        child_cnode.copy(PLATFORM_SLOT, PLATFORM_SLOT, Rights::ALL)?;
+        child_cnode.copy(MMIO_SLOT, MMIO_SLOT, Rights::ALL)?;
+        child_cnode.mint(self.endpoint.cap(), FAULT_SLOT, pid, Rights::ALL)?;
 
         let mut vspace_mgr = VSpaceManager::new(child_pd);
-        child_tcb.configure(child_cnode, child_pd, child_utcb, child_trapframe, child_kstack);
+        child_tcb.configure(child_cnode, child_pd, child_utcb, child_trapframe, child_kstack)?;
 
         vspace_mgr.map_frame(
             child_utcb,
@@ -259,7 +265,7 @@ impl<'a> ProcessManager<'a> {
 
 impl<'a> IProcessManager for ProcessManager<'a> {
     fn spawn(&mut self, name: &str) -> Result<usize, Error> {
-        let file = self.initrd.get_file(name).ok_or(Error::InvalidParam)?.to_vec();
+        let file = self.initrd.get_file(name).ok_or(Error::NotFound)?.to_vec();
 
         let process = self.create_inactive_process(name)?;
         let pid = process.pid;
@@ -271,9 +277,9 @@ impl<'a> IProcessManager for ProcessManager<'a> {
                 let process = self.processes.get_mut(&pid).unwrap();
                 process.heap_start = heap;
                 process.heap_brk = heap;
-                process.tcb.set_registers(entry, STACK_VA);
-                process.tcb.set_priority(SERVICE_PRIORITY);
-                process.tcb.resume();
+                process.tcb.set_registers(entry, STACK_VA)?;
+                process.tcb.set_priority(SERVICE_PRIORITY)?;
+                process.tcb.resume()?;
                 Ok(pid)
             }
             Err(e) => {
@@ -285,7 +291,7 @@ impl<'a> IProcessManager for ProcessManager<'a> {
 
     fn fork(&mut self, parent_pid: usize) -> Result<usize, Error> {
         let (heap_start, heap_brk, name) = {
-            let p = self.processes.get(&parent_pid).ok_or(Error::InvalidParam)?;
+            let p = self.processes.get(&parent_pid).ok_or(Error::NotFound)?;
             (p.heap_start, p.heap_brk, p.name.clone())
         };
 
@@ -355,8 +361,8 @@ impl<'a> IProcessManager for ProcessManager<'a> {
             root_cnode,
         )?;
 
-        child_cnode.mint(self.endpoint.cap(), FAULT_SLOT, pid, Rights::ALL);
-        child_tcb.configure(child_cnode, child_pd, child_utcb, child_trapframe, child_kstack);
+        child_cnode.mint(self.endpoint.cap(), FAULT_SLOT, pid, Rights::ALL)?;
+        child_tcb.configure(child_cnode, child_pd, child_utcb, child_trapframe, child_kstack)?;
 
         let mut process = Process::new(pid, parent_pid, name, child_tcb, child_pd, child_cnode);
         process.heap_start = heap_start;
@@ -371,18 +377,18 @@ impl<'a> IProcessManager for ProcessManager<'a> {
         if let Some(mut p) = self.processes.remove(&pid) {
             p.exit_code = code;
             p.state = ProcessState::Dead;
-            p.tcb.suspend();
+            p.tcb.suspend()?;
             Ok(())
         } else {
-            Err(Error::InvalidParam)
+            Err(Error::NotFound)
         }
     }
     fn load_image(&mut self, pid: usize, elf_data: &[u8]) -> Result<(usize, usize), Error> {
-        let elf = ElfFile::new(elf_data).map_err(|_| Error::InvalidParam)?;
+        let elf = ElfFile::new(elf_data).map_err(|_| Error::InvalidArgs)?;
         let mut max_vaddr = 0;
 
         let self_ptr = self as *mut ProcessManager;
-        let process = self.processes.get_mut(&pid).ok_or(Error::InvalidParam)?;
+        let process = self.processes.get_mut(&pid).ok_or(Error::NotFound)?;
         let dest_mgr = &mut process.vspace_mgr;
         let objects = unsafe { &mut (*self_ptr).resource_mgr };
         let slots = unsafe { &mut (*self_ptr).slot_mgr };
@@ -448,12 +454,12 @@ impl<'a> IMemoryService for ProcessManager<'a> {
     fn brk(&mut self, pid: usize, incr: isize) -> Result<usize, Error> {
         let root_cnode = self.root_cnode;
         let self_ptr = self as *mut ProcessManager;
-        let process = self.processes.get_mut(&pid).ok_or(Error::InvalidParam)?;
+        let process = self.processes.get_mut(&pid).ok_or(Error::NotFound)?;
         let old_brk = process.heap_brk;
         let new_brk = (old_brk as isize + incr) as usize;
 
         if new_brk < process.heap_start {
-            return Err(Error::InvalidParam);
+            return Err(Error::InvalidArgs);
         }
 
         if incr > 0 {
@@ -488,7 +494,7 @@ impl<'a> IMemoryService for ProcessManager<'a> {
         let len = args[1];
         let root_cnode = self.root_cnode;
         let self_ptr = self as *mut ProcessManager;
-        let process = self.processes.get_mut(&pid).ok_or(Error::InvalidParam)?;
+        let process = self.processes.get_mut(&pid).ok_or(Error::NotFound)?;
 
         let vaddr = if msg_addr == 0 { HEAP_VA + process.heap_brk } else { msg_addr };
         let start_page = vaddr & !(PGSIZE - 1);
@@ -514,9 +520,9 @@ impl<'a> IMemoryService for ProcessManager<'a> {
         let addr = args[0];
         let len = args[1];
         if addr % PGSIZE != 0 {
-            return Err(Error::InvalidParam);
+            return Err(Error::InvalidArgs);
         }
-        let process = self.processes.get_mut(&pid).ok_or(Error::InvalidParam)?;
+        let process = self.processes.get_mut(&pid).ok_or(Error::NotFound)?;
         process.vspace_mgr.unmap(addr, (len + PGSIZE - 1) / PGSIZE)
     }
 }

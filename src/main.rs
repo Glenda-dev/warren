@@ -11,7 +11,6 @@ mod process;
 
 use glenda::cap::CapType;
 use glenda::cap::{CSPACE_CAP, FAULT_CAP, FAULT_SLOT};
-use glenda::error::Error;
 use glenda::manager::{IResourceManager, ResourceManager};
 use glenda::mem::BOOTINFO_VA;
 use glenda::utils::bootinfo;
@@ -56,7 +55,10 @@ fn main() -> usize {
     // Init Resource Manager
     let mut resource_mgr = ResourceManager::new(bootinfo);
     // Allocated caps
-    resource_mgr.alloc(CapType::Endpoint, 0, CSPACE_CAP, FAULT_SLOT).map_err(|_| Error::InvalidCap);
+    if let Err(e) = resource_mgr.alloc(CapType::Endpoint, 0, CSPACE_CAP, FAULT_SLOT) {
+        log!("Failed to create endpoint: {:?}", e);
+        return 1;
+    }
 
     // Initialize Factotum Manager
     let mut manager = ProcessManager::new(CSPACE_CAP, FAULT_CAP, REPLY_CAP, resource_mgr, initrd);
