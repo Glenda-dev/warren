@@ -69,7 +69,7 @@ impl<'a> ProcessManager<'a> {
 
         Self {
             processes: BTreeMap::new(),
-            pid: Badge::new(1),
+            pid: Badge::null(),
             endpoint: Endpoint::from(CapPtr::null()),
             reply: Reply::from(CapPtr::null()),
             initrd,
