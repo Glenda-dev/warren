@@ -5,7 +5,7 @@ use glenda::cap::{CapPtr, Endpoint, Reply};
 use glenda::error::Error;
 use glenda::interface::{FaultService, MemoryService, ProcessService, SystemService};
 use glenda::ipc::proto;
-use glenda::ipc::{MsgArgs, MsgFlags, MsgTag, UTCB};
+use glenda::ipc::{Badge, MsgArgs, MsgFlags, MsgTag, UTCB};
 
 impl<'a> SystemService for ProcessManager<'a> {
     fn init(&mut self) -> Result<(), Error> {
@@ -28,7 +28,7 @@ impl<'a> SystemService for ProcessManager<'a> {
             if self.running == false {
                 return Ok(());
             }
-            let badge = match self.endpoint.recv(self.reply.cap()) {
+            match self.endpoint.recv(self.reply.cap()) {
                 Ok(b) => b,
                 Err(e) => {
                     log!("Recv error: {:?}", e);
@@ -37,6 +37,7 @@ impl<'a> SystemService for ProcessManager<'a> {
             };
             let utcb = unsafe { UTCB::get() };
             let msg_info = utcb.msg_tag;
+            let badge = utcb.badge;
             let label = msg_info.label();
             let proto = msg_info.proto();
             let flags = msg_info.flags();
@@ -63,7 +64,7 @@ impl<'a> SystemService for ProcessManager<'a> {
     }
     fn dispatch(
         &mut self,
-        badge: usize,
+        badge: Badge,
         label: usize,
         proto: usize,
         flags: MsgFlags,
@@ -100,9 +101,7 @@ impl<'a> SystemService for ProcessManager<'a> {
             },
             proto::KERNEL_PROTO => {
                 let res = match label {
-                    proto::kernel::SYSCALL => {
-                        self.syscall(badge, msg[0], msg[1], msg[2], msg[3], msg[4], msg[5], msg[6])
-                    }
+                    proto::kernel::SYSCALL => self.syscall(badge, msg),
                     proto::kernel::PAGE_FAULT => self.page_fault(badge, msg[0], msg[1], msg[2]),
                     proto::kernel::ILLEGAL_INSTRUCTION => {
                         self.illegal_instrution(badge, msg[0], msg[1])

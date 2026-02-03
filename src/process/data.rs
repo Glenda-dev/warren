@@ -2,12 +2,13 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use glenda::cap::{CNode, CapPtr, Frame, TCB, VSpace};
 use glenda::error::Error;
+use glenda::ipc::Badge;
 use glenda::manager::VSpaceManager;
 
 /// Process Control Block in Factotum
 pub struct Process {
-    pub pid: usize,
-    pub parent_pid: usize,
+    pub pid: Badge,
+    pub parent_pid: Badge,
     pub name: String,
 
     // Capabilities
@@ -39,8 +40,8 @@ pub enum ProcessState {
 
 impl Process {
     pub fn new(
-        pid: usize,
-        parent_pid: usize,
+        pid: Badge,
+        parent_pid: Badge,
         name: String,
         tcb: TCB,
         vspace: VSpace,

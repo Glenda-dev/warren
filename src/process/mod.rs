@@ -18,6 +18,7 @@ use glenda::cap::{
 };
 use glenda::error::Error;
 use glenda::interface::{CSpaceService, ResourceService, VSpaceService};
+use glenda::ipc::Badge;
 use glenda::manager::{CSpaceManager, ResourceManager, VSpaceManager};
 use glenda::mem::Perms;
 use glenda::mem::{ENTRY_VA, STACK_VA, TRAPFRAME_VA, UTCB_VA};
@@ -33,8 +34,8 @@ pub struct SystemContext<'a> {
 }
 
 pub struct ProcessManager<'a> {
-    processes: BTreeMap<usize, Process>,
-    next_pid: usize,
+    processes: BTreeMap<Badge, Process>,
+    pid: Badge,
 
     // Communication
     endpoint: Endpoint,
@@ -68,7 +69,7 @@ impl<'a> ProcessManager<'a> {
 
         Self {
             processes: BTreeMap::new(),
-            next_pid: 1,
+            pid: Badge::new(1),
             endpoint: Endpoint::from(CapPtr::null()),
             reply: Reply::from(CapPtr::null()),
             initrd,
@@ -76,10 +77,13 @@ impl<'a> ProcessManager<'a> {
             running: false,
         }
     }
-
+    fn alloc_pid(&mut self) -> Result<Badge, Error> {
+        let next = self.pid.bits().checked_add(1).ok_or(Error::OutOfSlots)?;
+        self.pid = Badge::new(next);
+        Ok(self.pid)
+    }
     fn create(&mut self, name: &str) -> Result<Process, Error> {
-        let pid = self.next_pid;
-        self.next_pid += 1;
+        let pid = self.alloc_pid()?;
 
         let ep_slot = self.ctx.cspace_mgr.alloc(self.ctx.resource_mgr)?;
         self.ctx.root_cnode.mint(self.endpoint.cap(), ep_slot, pid, Rights::ALL)?;
@@ -164,7 +168,7 @@ impl<'a> ProcessManager<'a> {
 
         let mut process = Process::new(
             pid,
-            0,
+            Badge::null(),
             name.to_string(),
             child_tcb,
             child_pd,

@@ -6,6 +6,7 @@ use glenda::error::Error;
 use glenda::interface::{
     CSpaceService, FaultService, ProcessService, ResourceService, VSpaceService,
 };
+use glenda::ipc::{Badge, MsgArgs};
 use glenda::mem::Perms;
 use glenda::mem::STACK_VA;
 use glenda::utils::align::align_down;
@@ -15,7 +16,7 @@ const MAX_STACK_SIZE: usize = 8 * 1024 * 1024; // 8MB
 impl<'a> FaultService for ProcessManager<'a> {
     fn page_fault(
         &mut self,
-        pid: usize,
+        pid: Badge,
         addr: usize,
         pc: usize,
         cause: usize,
@@ -70,7 +71,7 @@ impl<'a> FaultService for ProcessManager<'a> {
     }
     fn unknown_fault(
         &mut self,
-        pid: usize,
+        pid: Badge,
         cause: usize,
         value: usize,
         pc: usize,
@@ -84,46 +85,36 @@ impl<'a> FaultService for ProcessManager<'a> {
         );
         self.exit(pid, usize::MAX).map(|_| ())
     }
-    fn access_fault(&mut self, pid: usize, addr: usize, pc: usize) -> Result<(), Error> {
+    fn access_fault(&mut self, pid: Badge, addr: usize, pc: usize) -> Result<(), Error> {
         log!("Access Fault: pid={}, addr={:#x}, pc={:#x}", pid, addr, pc);
         self.exit(pid, 0x0b).map(|_| ())
     }
-    fn access_misaligned(&mut self, pid: usize, addr: usize, pc: usize) -> Result<(), Error> {
+    fn access_misaligned(&mut self, pid: Badge, addr: usize, pc: usize) -> Result<(), Error> {
         log!("Misaligned Access: pid={}, addr={:#x}, pc={:#x}", pid, addr, pc);
         self.exit(pid, 0x0b).map(|_| ())
     }
-    fn breakpoint(&mut self, pid: usize, pc: usize) -> Result<(), Error> {
+    fn breakpoint(&mut self, pid: Badge, pc: usize) -> Result<(), Error> {
         log!("Breakpoint: pid={}, pc={:#x}", pid, pc);
         // Maybe resume or handled by debugger service
         self.exit(pid, 0x05).map(|_| ())
     }
 
-    fn illegal_instrution(&mut self, pid: usize, inst: usize, pc: usize) -> Result<(), Error> {
+    fn illegal_instrution(&mut self, pid: Badge, inst: usize, pc: usize) -> Result<(), Error> {
         log!("Illegal Instruction: pid={}, inst={:#x}, pc={:#x}", pid, inst, pc);
         self.exit(pid, 0x04).map(|_| ())
     }
 
-    fn syscall(
-        &mut self,
-        pid: usize,
-        reg0: usize,
-        reg1: usize,
-        reg2: usize,
-        reg3: usize,
-        reg4: usize,
-        reg5: usize,
-        reg6: usize,
-    ) -> Result<(), Error> {
+    fn syscall(&mut self, pid: Badge, reg: MsgArgs) -> Result<(), Error> {
         log!(
             "Non-Native Syscall: pid={}, regs=[{},{},{},{},{},{},{}]",
             pid,
-            reg0,
-            reg1,
-            reg2,
-            reg3,
-            reg4,
-            reg5,
-            reg6
+            reg[0],
+            reg[1],
+            reg[2],
+            reg[3],
+            reg[4],
+            reg[5],
+            reg[6]
         );
         self.exit(pid, usize::MAX).map(|_| ())
     }

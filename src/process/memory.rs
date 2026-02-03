@@ -3,10 +3,11 @@ use glenda::arch::mem::PGSIZE;
 use glenda::cap::{CapType, Frame};
 use glenda::error::Error;
 use glenda::interface::{CSpaceService, MemoryService, ResourceService, VSpaceService};
+use glenda::ipc::Badge;
 use glenda::mem::Perms;
 
 impl<'a> MemoryService for ProcessManager<'a> {
-    fn brk(&mut self, pid: usize, incr: isize) -> Result<usize, Error> {
+    fn brk(&mut self, pid: Badge, incr: isize) -> Result<usize, Error> {
         let process = self.processes.get_mut(&pid).ok_or(Error::NotFound)?;
         let old_brk = process.heap_brk;
         let new_brk = (old_brk as isize + incr) as usize;
@@ -37,7 +38,7 @@ impl<'a> MemoryService for ProcessManager<'a> {
         Ok(new_brk)
     }
 
-    fn mmap(&mut self, pid: usize, addr: usize, len: usize) -> Result<usize, Error> {
+    fn mmap(&mut self, pid: Badge, addr: usize, len: usize) -> Result<usize, Error> {
         let process = self.processes.get_mut(&pid).ok_or(Error::NotFound)?;
 
         let vaddr = addr;
@@ -61,7 +62,7 @@ impl<'a> MemoryService for ProcessManager<'a> {
         Ok(vaddr)
     }
 
-    fn munmap(&mut self, pid: usize, addr: usize, len: usize) -> Result<(), Error> {
+    fn munmap(&mut self, pid: Badge, addr: usize, len: usize) -> Result<(), Error> {
         if addr % PGSIZE != 0 {
             return Err(Error::InvalidArgs);
         }

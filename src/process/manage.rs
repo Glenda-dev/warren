@@ -10,6 +10,7 @@ use glenda::cap::MONITOR_SLOT;
 use glenda::cap::{CNode, CapType, Frame, Rights, TCB, VSpace};
 use glenda::error::Error;
 use glenda::interface::{CSpaceService, ProcessService, ResourceService, VSpaceService};
+use glenda::ipc::Badge;
 use glenda::manager::VSpaceManager;
 use glenda::mem::Perms;
 use glenda::mem::{STACK_VA, TRAPFRAME_VA, UTCB_VA};
@@ -30,7 +31,7 @@ impl<'a> ProcessService for ProcessManager<'a> {
                 process.tcb.set_entrypoint(entry, STACK_VA)?;
                 process.tcb.set_priority(SERVICE_PRIORITY)?;
                 process.tcb.resume()?;
-                Ok(pid)
+                Ok(pid.bits())
             }
             Err(e) => {
                 self.processes.remove(&pid);
@@ -39,14 +40,13 @@ impl<'a> ProcessService for ProcessManager<'a> {
         }
     }
 
-    fn fork(&mut self, parent_pid: usize) -> Result<usize, Error> {
+    fn fork(&mut self, parent_pid: Badge) -> Result<usize, Error> {
         let (heap_start, heap_brk, name, stack_base, stack_pages) = {
             let p = self.processes.get(&parent_pid).ok_or(Error::NotFound)?;
             (p.heap_start, p.heap_brk, p.name.clone(), p.stack_base, p.stack_pages)
         };
 
-        let pid = self.next_pid;
-        self.next_pid += 1;
+        let pid = self.alloc_pid()?;
 
         let cnode_slot = self.ctx.cspace_mgr.alloc(self.ctx.resource_mgr)?;
         self.ctx.resource_mgr.alloc(CapType::CNode, 0, self.ctx.root_cnode, cnode_slot)?;
@@ -134,10 +134,10 @@ impl<'a> ProcessService for ProcessManager<'a> {
         process.stack_pages = stack_pages;
 
         self.processes.insert(pid, process);
-        Ok(pid)
+        Ok(pid.bits())
     }
 
-    fn exit(&mut self, pid: usize, code: usize) -> Result<(), Error> {
+    fn exit(&mut self, pid: Badge, code: usize) -> Result<(), Error> {
         if let Some(mut p) = self.processes.remove(&pid) {
             p.exit_code = code;
             p.state = ProcessState::Dead;
@@ -149,7 +149,7 @@ impl<'a> ProcessService for ProcessManager<'a> {
         unreachable!();
         Err(Error::Success)
     }
-    fn load_image(&mut self, pid: usize, elf_data: &[u8]) -> Result<(usize, usize), Error> {
+    fn load_image(&mut self, pid: Badge, elf_data: &[u8]) -> Result<(usize, usize), Error> {
         let elf = ElfFile::new(elf_data).map_err(|_| Error::InvalidArgs)?;
         let mut max_vaddr = 0;
         let process = self.processes.get_mut(&pid).ok_or(Error::NotFound)?;
@@ -259,7 +259,7 @@ impl<'a> ProcessService for ProcessManager<'a> {
 
 impl<'a> ProcessManager<'a> {
     #[warn(deprecated_in_future)]
-    pub fn procinit(&mut self, pid: usize) -> Result<usize, Error> {
+    pub fn procinit(&mut self, pid: Badge) -> Result<usize, Error> {
         let process = self.processes.get_mut(&pid).ok_or(Error::NotFound)?;
         Ok(process.heap_start)
     }
