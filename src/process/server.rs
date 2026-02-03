@@ -71,7 +71,7 @@ impl<'a> SystemService for ProcessManager<'a> {
         msg: MsgArgs,
     ) -> Result<MsgArgs, Error> {
         log!(
-            "Received message: badge={}, label=0x{:x}, proto=0x{:x}, flags={}, msg={:?}",
+            "Received message: badge={}, label={:#x}, proto={:#x}, flags={}, msg={:?}",
             badge,
             label,
             proto,
