@@ -2,11 +2,11 @@ use super::ProcessManager;
 use glenda::arch::mem::PGSIZE;
 use glenda::cap::{CapType, Frame};
 use glenda::error::Error;
-use glenda::manager::{IMemoryService, IResourceManager, ISlotManager, IVSpaceManager};
+use glenda::interface::{CSpaceService, MemoryService, ResourceService, VSpaceService};
 use glenda::mem::HEAP_VA;
 use glenda::mem::Perms;
 
-impl<'a> IMemoryService for ProcessManager<'a> {
+impl<'a> MemoryService for ProcessManager<'a> {
     fn brk(&mut self, pid: usize, incr: isize) -> Result<usize, Error> {
         let process = self.processes.get_mut(&pid).ok_or(Error::NotFound)?;
         let old_brk = process.heap_brk;

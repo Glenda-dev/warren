@@ -3,10 +3,10 @@ use crate::log;
 use glenda::arch::mem::PGSIZE;
 use glenda::cap::{CapType, Frame};
 use glenda::error::Error;
-use glenda::manager::{IFaultService, IResourceManager, ISlotManager, IVSpaceManager};
+use glenda::interface::{CSpaceService, FaultService, ResourceService, VSpaceService};
 use glenda::mem::Perms;
 
-impl<'a> IFaultService for ProcessManager<'a> {
+impl<'a> FaultService for ProcessManager<'a> {
     fn handle_page_fault(
         &mut self,
         pid: usize,

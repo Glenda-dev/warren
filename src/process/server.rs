@@ -3,12 +3,12 @@ use crate::layout::INIT_NAME;
 use crate::log;
 use glenda::cap::{Endpoint, Reply};
 use glenda::error::Error;
+use glenda::interface::{FaultService, MemoryService, ProcessService, SystemService};
 use glenda::ipc::proto;
 use glenda::ipc::utcb;
 use glenda::ipc::{MsgArgs, MsgFlags, MsgTag};
-use glenda::manager::{IFaultService, IMemoryService, IProcessManager, ISystemService};
 
-impl<'a> ISystemService for ProcessManager<'a> {
+impl<'a> SystemService for ProcessManager<'a> {
     fn init(&mut self) -> Result<(), Error> {
         // Use trait interface to spawn
         self.spawn(INIT_NAME).map(|pid| {

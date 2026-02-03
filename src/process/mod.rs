@@ -14,9 +14,8 @@ use glenda::cap::{
     CSPACE_SLOT, KERNEL_SLOT, MMIO_SLOT, MONITOR_SLOT, PLATFORM_SLOT, TCB_SLOT, VSPACE_SLOT,
 };
 use glenda::error::Error;
-use glenda::manager::{
-    IResourceManager, ISlotManager, IVSpaceManager, ResourceManager, SlotManager, VSpaceManager,
-};
+use glenda::interface::{CSpaceService, ResourceService, VSpaceService};
+use glenda::manager::{CSpaceManager, ResourceManager, VSpaceManager};
 use glenda::mem::Perms;
 use glenda::mem::{ENTRY_VA, HEAP_VA, STACK_VA, TRAPFRAME_VA, UTCB_VA};
 use glenda::utils::initrd::Initrd;
@@ -27,7 +26,7 @@ pub struct SystemContext<'a> {
     pub root_cnode: CNode,
     pub vspace_mgr: &'a mut VSpaceManager,
     pub resource_mgr: &'a mut ResourceManager,
-    pub slot_mgr: &'a mut SlotManager,
+    pub slot_mgr: &'a mut CSpaceManager,
 }
 
 pub struct ProcessManager<'a> {
@@ -48,7 +47,7 @@ impl<'a> ProcessManager<'a> {
         root_cnode: CNode,
         vspace_mgr: &'a mut VSpaceManager,
         resource_mgr: &'a mut ResourceManager,
-        slot_mgr: &'a mut SlotManager,
+        slot_mgr: &'a mut CSpaceManager,
         initrd: Initrd<'a>,
     ) -> Self {
         // Init self vspace with known regions (to populate shadow tables)

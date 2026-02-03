@@ -12,8 +12,8 @@ mod process;
 use glenda::cap::{CSPACE_CAP, MONITOR_CAP, MONITOR_SLOT};
 use glenda::cap::{CapType, VSPACE_CAP};
 use glenda::error::Error;
-use glenda::manager::{IResourceManager, ISystemService};
-use glenda::manager::{ResourceManager, SlotManager, VSpaceManager};
+use glenda::interface::{ResourceService, SystemService};
+use glenda::manager::{CSpaceManager, ResourceManager, VSpaceManager};
 use glenda::mem::BOOTINFO_VA;
 use glenda::utils::bootinfo;
 use glenda::utils::bootinfo::BootInfo;
@@ -57,7 +57,7 @@ fn main() -> usize {
     // Init Resource Manager
     let mut resource_mgr = ResourceManager::new(bootinfo);
     let mut vspace_mgr = VSpaceManager::new(VSPACE_CAP);
-    let mut slot_mgr = SlotManager::new(CSPACE_CAP, 16);
+    let mut slot_mgr = CSpaceManager::new(CSPACE_CAP, 16);
 
     // Allocated caps
     if let Err(e) = resource_mgr.alloc(CapType::Endpoint, 0, CSPACE_CAP, MONITOR_SLOT) {

@@ -8,15 +8,14 @@ use glenda::arch::mem::{KSTACK_PAGES, PGSIZE};
 use glenda::cap::MONITOR_SLOT;
 use glenda::cap::{CNode, CapType, Frame, Rights, TCB, VSpace};
 use glenda::error::Error;
-use glenda::manager::{
-    IProcessManager, IResourceManager, ISlotManager, IVSpaceManager, VSpaceManager,
-};
+use glenda::interface::{CSpaceService, ProcessService, ResourceService, VSpaceService};
+use glenda::manager::VSpaceManager;
 use glenda::mem::Perms;
 use glenda::mem::{STACK_VA, TRAPFRAME_VA, UTCB_VA};
 
 pub const SERVICE_PRIORITY: u8 = 128;
 
-impl<'a> IProcessManager for ProcessManager<'a> {
+impl<'a> ProcessService for ProcessManager<'a> {
     fn spawn(&mut self, name: &str) -> Result<usize, Error> {
         let file = self.initrd.get_file(name).ok_or(Error::NotFound)?.to_vec();
 
