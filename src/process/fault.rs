@@ -106,7 +106,7 @@ impl<'a> FaultService for ProcessManager<'a> {
 
     fn syscall(&mut self, pid: Badge, reg: MsgArgs) -> Result<(), Error> {
         log!(
-            "Non-Native Syscall: pid={}, regs=[{},{},{},{},{},{},{}]",
+            "Non-Native Syscall: pid={}, regs=[{},{},{},{},{},{},{},{}]",
             pid,
             reg[0],
             reg[1],
@@ -114,7 +114,8 @@ impl<'a> FaultService for ProcessManager<'a> {
             reg[3],
             reg[4],
             reg[5],
-            reg[6]
+            reg[6],
+            reg[7]
         );
         self.exit(pid, usize::MAX).map(|_| ())
     }
