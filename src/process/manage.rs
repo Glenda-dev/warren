@@ -28,7 +28,7 @@ impl<'a> ProcessService for ProcessManager<'a> {
             Ok((entry, heap)) => {
                 let process = self.processes.get_mut(&pid).unwrap();
                 process.setup_heap(heap, 0)?;
-                process.tcb.set_entrypoint(entry, STACK_VA)?;
+                process.tcb.set_entrypoint(entry, STACK_VA, 0)?;
                 process.tcb.set_priority(SERVICE_PRIORITY)?;
                 process.tcb.resume()?;
                 Ok(pid.bits())
