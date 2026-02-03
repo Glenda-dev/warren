@@ -1,7 +1,7 @@
 use super::ProcessManager;
 use crate::layout::INIT_NAME;
 use crate::log;
-use glenda::cap::{Endpoint, Reply};
+use glenda::cap::{CapPtr, Endpoint, Reply};
 use glenda::error::Error;
 use glenda::interface::{FaultService, MemoryService, ProcessService, SystemService};
 use glenda::ipc::proto;
@@ -12,19 +12,23 @@ impl<'a> SystemService for ProcessManager<'a> {
     fn init(&mut self) -> Result<(), Error> {
         // Use trait interface to spawn
         self.spawn(INIT_NAME).map(|pid| {
-            log!("Started init with PID: {}", pid);
+            log!("Started init {} with PID: {}", INIT_NAME, pid);
         })
     }
-    fn listen(&mut self, ep: Endpoint, reply: Reply) -> Result<(), Error> {
+    fn listen(&mut self, ep: Endpoint, reply: CapPtr) -> Result<(), Error> {
         self.endpoint = ep;
-        self.reply = reply;
+        self.reply = Reply::from(reply);
         Ok(())
     }
     fn run(&mut self) -> Result<(), Error> {
         if self.endpoint.cap().is_null() || self.reply.cap().is_null() {
             return Err(Error::NotInitialized);
         }
+        self.running = true;
         loop {
+            if self.running == false {
+                return Ok(());
+            }
             let badge = match self.endpoint.recv(self.reply.cap()) {
                 Ok(b) => b,
                 Err(e) => {
@@ -39,19 +43,22 @@ impl<'a> SystemService for ProcessManager<'a> {
             let flags = msg_info.flags();
             let args = utcb.mrs_regs;
 
-            match self.dispatch(badge, label, proto, flags, args) {
-                Ok(val) => self.reply(
-                    proto::GENERIC_PROTO,
-                    proto::generic::REPLY,
-                    MsgFlags::OK,
-                    [val, 0, 0, 0, 0, 0, 0],
-                )?,
-                Err(e) => self.reply(
-                    proto::GENERIC_PROTO,
-                    proto::generic::REPLY,
-                    MsgFlags::ERROR,
-                    [e as usize, 0, 0, 0, 0, 0, 0],
-                )?,
+            let res = self.dispatch(badge, label, proto, flags, args);
+            match res {
+                Ok(ret) => {
+                    self.reply(proto::GENERIC_PROTO, proto::generic::REPLY, MsgFlags::OK, ret)?
+                }
+                Err(e) => match e {
+                    Error::Success => {
+                        continue;
+                    }
+                    _ => self.reply(
+                        proto::GENERIC_PROTO,
+                        proto::generic::REPLY,
+                        MsgFlags::ERROR,
+                        [e as usize, 0, 0, 0, 0, 0, 0],
+                    )?,
+                },
             }
         }
     }
@@ -60,12 +67,20 @@ impl<'a> SystemService for ProcessManager<'a> {
         badge: usize,
         label: usize,
         proto: usize,
-        _flags: MsgFlags,
+        flags: MsgFlags,
         msg: MsgArgs,
-    ) -> Result<usize, Error> {
-        match proto {
+    ) -> Result<MsgArgs, Error> {
+        log!(
+            "Received message: badge={}, label=0x{:x}, proto=0x{:x}, flags={}, msg={:?}",
+            badge,
+            label,
+            proto,
+            flags,
+            msg
+        );
+        let ret = match proto {
             proto::PROCESS_PROTO => match label {
-                proto::process::SPAWN_SERVICE => {
+                proto::process::SPAWN => {
                     let name_len = msg[0];
                     let name_res = unsafe { utcb::get() }.read_str(0, name_len);
                     if let Some(name) = name_res {
@@ -77,18 +92,35 @@ impl<'a> SystemService for ProcessManager<'a> {
                 proto::process::FORK => self.fork(badge),
                 proto::process::EXIT => self.exit(badge, msg[0]).map(|_| 0),
                 proto::process::SBRK => self.brk(badge, msg[0] as isize),
-                proto::process::MMAP => self.mmap(badge, &msg),
-                proto::process::MUNMAP => self.munmap(badge, &msg).map(|_| 0),
+                proto::process::MMAP => self.mmap(badge, msg[0], msg[1]),
+                proto::process::MUNMAP => self.munmap(badge, msg[0], msg[1]).map(|_| 0),
+                proto::process::INIT => self.procinit(badge),
                 _ => Err(Error::InvalidMethod),
             },
-            proto::KERNEL_PROTO => match label {
-                proto::kernel::PAGE_FAULT => {
-                    self.handle_page_fault(badge, msg[0], msg[1]).map(|_| 0)
+            proto::KERNEL_PROTO => {
+                let res = match label {
+                    proto::kernel::SYSCALL => {
+                        self.syscall(badge, msg[0], msg[1], msg[2], msg[3], msg[4], msg[5], msg[6])
+                    }
+                    proto::kernel::PAGE_FAULT => self.page_fault(badge, msg[0], msg[1], msg[2]),
+                    proto::kernel::ILLEGAL_INSTRUCTION => {
+                        self.illegal_instrution(badge, msg[0], msg[1])
+                    }
+                    proto::kernel::BREAKPOINT => self.breakpoint(badge, msg[0]),
+                    proto::kernel::ACCESS_FAULT => self.access_fault(badge, msg[0], msg[1]),
+                    proto::kernel::ACCESS_MISALIGNED => {
+                        self.access_misaligned(badge, msg[0], msg[1])
+                    }
+                    _ => self.unknown_fault(badge, msg[0], msg[1], msg[2]),
+                };
+                if let Err(e) = res {
+                    log!("Failed to handle kernel protocol: {:?}", e);
                 }
-                _ => Err(Error::InvalidMethod),
-            },
+                Err(Error::Success)
+            }
             _ => Err(Error::InvalidProtocol),
-        }
+        }?;
+        Ok([ret, 0, 0, 0, 0, 0, 0])
     }
     fn reply(
         &mut self,
@@ -100,4 +132,5 @@ impl<'a> SystemService for ProcessManager<'a> {
         let tag = MsgTag::new(proto, label, flags);
         self.reply.reply(tag, msg)
     }
+    fn exit() {}
 }

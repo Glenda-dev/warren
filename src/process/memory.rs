@@ -3,7 +3,6 @@ use glenda::arch::mem::PGSIZE;
 use glenda::cap::{CapType, Frame};
 use glenda::error::Error;
 use glenda::interface::{CSpaceService, MemoryService, ResourceService, VSpaceService};
-use glenda::mem::HEAP_VA;
 use glenda::mem::Perms;
 
 impl<'a> MemoryService for ProcessManager<'a> {
@@ -21,7 +20,7 @@ impl<'a> MemoryService for ProcessManager<'a> {
             let end_page = (new_brk + PGSIZE - 1) & !(PGSIZE - 1);
 
             for vaddr in (start_page..end_page).step_by(PGSIZE) {
-                let slot = self.ctx.slot_mgr.alloc(self.ctx.resource_mgr)?;
+                let slot = self.ctx.cspace_mgr.alloc(self.ctx.resource_mgr)?;
                 self.ctx.resource_mgr.alloc(CapType::Frame, 1, self.ctx.root_cnode, slot)?;
                 process.vspace_mgr.map_frame(
                     Frame::from(slot),
@@ -29,7 +28,7 @@ impl<'a> MemoryService for ProcessManager<'a> {
                     Perms::READ | Perms::WRITE | Perms::USER,
                     1,
                     self.ctx.resource_mgr,
-                    self.ctx.slot_mgr,
+                    self.ctx.cspace_mgr,
                     self.ctx.root_cnode,
                 )?;
             }
@@ -38,23 +37,16 @@ impl<'a> MemoryService for ProcessManager<'a> {
         Ok(new_brk)
     }
 
-    fn mmap(&mut self, pid: usize, args: &[usize]) -> Result<usize, Error> {
-        let msg_addr = args[0];
-        let len = args[1];
-
+    fn mmap(&mut self, pid: usize, addr: usize, len: usize) -> Result<usize, Error> {
         let process = self.processes.get_mut(&pid).ok_or(Error::NotFound)?;
 
-        let vaddr = if msg_addr == 0 { HEAP_VA + process.heap_brk } else { msg_addr };
-
-        if vaddr < HEAP_VA {
-            return Err(Error::InvalidArgs);
-        }
+        let vaddr = addr;
 
         let start_page = vaddr & !(PGSIZE - 1);
         let end_page = (vaddr + len + PGSIZE - 1) & !(PGSIZE - 1);
 
         for v in (start_page..end_page).step_by(PGSIZE) {
-            let slot = self.ctx.slot_mgr.alloc(self.ctx.resource_mgr)?;
+            let slot = self.ctx.cspace_mgr.alloc(self.ctx.resource_mgr)?;
             self.ctx.resource_mgr.alloc(CapType::Frame, 1, self.ctx.root_cnode, slot)?;
             process.vspace_mgr.map_frame(
                 Frame::from(slot),
@@ -62,16 +54,14 @@ impl<'a> MemoryService for ProcessManager<'a> {
                 Perms::READ | Perms::WRITE | Perms::USER,
                 1,
                 self.ctx.resource_mgr,
-                self.ctx.slot_mgr,
+                self.ctx.cspace_mgr,
                 self.ctx.root_cnode,
             )?;
         }
         Ok(vaddr)
     }
 
-    fn munmap(&mut self, pid: usize, args: &[usize]) -> Result<(), Error> {
-        let addr = args[0];
-        let len = args[1];
+    fn munmap(&mut self, pid: usize, addr: usize, len: usize) -> Result<(), Error> {
         if addr % PGSIZE != 0 {
             return Err(Error::InvalidArgs);
         }

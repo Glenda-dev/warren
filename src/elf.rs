@@ -35,6 +35,7 @@ pub struct Elf64Phdr {
 }
 
 pub const PT_LOAD: u32 = 1;
+pub const PT_TLS: u32 = 7;
 pub const PF_X: u32 = 1;
 pub const PF_W: u32 = 2;
 pub const PF_R: u32 = 4;
@@ -92,7 +93,8 @@ impl<'a> Iterator for ProgramHeaders<'a> {
             return None;
         }
 
-        let ph = unsafe { core::ptr::read_unaligned(self.data.as_ptr().add(off) as *const Elf64Phdr) };
+        let ph =
+            unsafe { core::ptr::read_unaligned(self.data.as_ptr().add(off) as *const Elf64Phdr) };
         self.current += 1;
         Some(ph)
     }

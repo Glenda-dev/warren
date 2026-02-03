@@ -3,40 +3,52 @@ use crate::log;
 use glenda::arch::mem::PGSIZE;
 use glenda::cap::{CapType, Frame};
 use glenda::error::Error;
-use glenda::interface::{CSpaceService, FaultService, ResourceService, VSpaceService};
+use glenda::interface::{
+    CSpaceService, FaultService, ProcessService, ResourceService, VSpaceService,
+};
 use glenda::mem::Perms;
+use glenda::mem::STACK_VA;
+use glenda::utils::align::align_down;
+
+const MAX_STACK_SIZE: usize = 8 * 1024 * 1024; // 8MB
 
 impl<'a> FaultService for ProcessManager<'a> {
-    fn handle_page_fault(
+    fn page_fault(
         &mut self,
         pid: usize,
-        vaddr: usize,
-        error_code: usize,
+        addr: usize,
+        pc: usize,
+        cause: usize,
     ) -> Result<(), Error> {
+        // Only handle stack growth
+        if addr < STACK_VA - MAX_STACK_SIZE || addr >= STACK_VA {
+            log!(
+                "PageFault outside stack: pid={}, address={:#x}, pc={:#x}, cause={:#x}",
+                pid,
+                addr,
+                pc,
+                cause
+            );
+            return self.exit(pid, 0x0b).map(|_| ());
+        }
+
         let process = self.processes.get_mut(&pid).ok_or(Error::NotFound)?;
 
         log!(
-            "PageFault: PID={} Addr={:#x} Code={:#x}. Allocating 4K page.",
+            "PageFault (Stack): pid={}, address={:#x}, pc={:#x}, cause={:#x}",
             pid,
-            vaddr,
-            error_code
+            addr,
+            pc,
+            cause
         );
 
         // 1. Allocate Frame
-        let frame_slot =
-            match self.ctx.slot_mgr.alloc(self.ctx.resource_mgr).map_err(|_| Error::OutOfMemory)? {
-                slot => slot,
-            };
+        let frame_slot = self.ctx.cspace_mgr.alloc(self.ctx.resource_mgr)?;
 
-        if let Err(e) =
-            self.ctx.resource_mgr.alloc(CapType::Frame, 1, self.ctx.root_cnode, frame_slot)
-        {
-            log!("Failed to alloc frame for fault: {:?}", e);
-            return Err(Error::OutOfMemory);
-        }
+        self.ctx.resource_mgr.alloc(CapType::Frame, 1, self.ctx.root_cnode, frame_slot)?;
 
         // 2. Map Frame
-        let page_base = vaddr & !(PGSIZE - 1);
+        let page_base = align_down(addr, PGSIZE);
         let perms = Perms::READ | Perms::WRITE | Perms::USER;
         let frame = Frame::from(frame_slot);
 
@@ -46,12 +58,73 @@ impl<'a> FaultService for ProcessManager<'a> {
             perms,
             1,
             self.ctx.resource_mgr,
-            self.ctx.slot_mgr,
+            self.ctx.cspace_mgr,
             self.ctx.root_cnode, // Using Factotum's cnode for mapping bookkeeping
         )?;
 
         // 3. Record Resource
+        process.stack_pages += 1;
         process.allocated_slots.push(frame_slot);
+        log!("Solved PageFault with stack_pages: {}", process.stack_pages);
         Ok(())
+    }
+    fn unknown_fault(
+        &mut self,
+        pid: usize,
+        cause: usize,
+        value: usize,
+        pc: usize,
+    ) -> Result<(), Error> {
+        log!(
+            "Unhandled fault: pid={}, cause={:#x}, value={:#x}, pc={:#x}. Killing process.\n",
+            pid,
+            cause,
+            value,
+            pc
+        );
+        self.exit(pid, usize::MAX).map(|_| ())
+    }
+    fn access_fault(&mut self, pid: usize, addr: usize, pc: usize) -> Result<(), Error> {
+        log!("Access Fault: pid={}, addr={:#x}, pc={:#x}", pid, addr, pc);
+        self.exit(pid, 0x0b).map(|_| ())
+    }
+    fn access_misaligned(&mut self, pid: usize, addr: usize, pc: usize) -> Result<(), Error> {
+        log!("Misaligned Access: pid={}, addr={:#x}, pc={:#x}", pid, addr, pc);
+        self.exit(pid, 0x0b).map(|_| ())
+    }
+    fn breakpoint(&mut self, pid: usize, pc: usize) -> Result<(), Error> {
+        log!("Breakpoint: pid={}, pc={:#x}", pid, pc);
+        // Maybe resume or handled by debugger service
+        self.exit(pid, 0x05).map(|_| ())
+    }
+
+    fn illegal_instrution(&mut self, pid: usize, inst: usize, pc: usize) -> Result<(), Error> {
+        log!("Illegal Instruction: pid={}, inst={:#x}, pc={:#x}", pid, inst, pc);
+        self.exit(pid, 0x04).map(|_| ())
+    }
+
+    fn syscall(
+        &mut self,
+        pid: usize,
+        reg0: usize,
+        reg1: usize,
+        reg2: usize,
+        reg3: usize,
+        reg4: usize,
+        reg5: usize,
+        reg6: usize,
+    ) -> Result<(), Error> {
+        log!(
+            "Non-Native Syscall: pid={}, regs=[{},{},{},{},{},{},{}]",
+            pid,
+            reg0,
+            reg1,
+            reg2,
+            reg3,
+            reg4,
+            reg5,
+            reg6
+        );
+        self.exit(pid, usize::MAX).map(|_| ())
     }
 }
