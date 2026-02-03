@@ -5,8 +5,7 @@ use glenda::cap::{CapPtr, Endpoint, Reply};
 use glenda::error::Error;
 use glenda::interface::{FaultService, MemoryService, ProcessService, SystemService};
 use glenda::ipc::proto;
-use glenda::ipc::utcb;
-use glenda::ipc::{MsgArgs, MsgFlags, MsgTag};
+use glenda::ipc::{MsgArgs, MsgFlags, MsgTag, UTCB};
 
 impl<'a> SystemService for ProcessManager<'a> {
     fn init(&mut self) -> Result<(), Error> {
@@ -36,7 +35,7 @@ impl<'a> SystemService for ProcessManager<'a> {
                     continue;
                 }
             };
-            let utcb = unsafe { utcb::get() };
+            let utcb = unsafe { UTCB::get() };
             let msg_info = utcb.msg_tag;
             let label = msg_info.label();
             let proto = msg_info.proto();
@@ -82,7 +81,7 @@ impl<'a> SystemService for ProcessManager<'a> {
             proto::PROCESS_PROTO => match label {
                 proto::process::SPAWN => {
                     let name_len = msg[0];
-                    let name_res = unsafe { utcb::get() }.read_str(0, name_len);
+                    let name_res = unsafe { UTCB::get() }.read_str(0, name_len);
                     if let Some(name) = name_res {
                         self.spawn(&name)
                     } else {
