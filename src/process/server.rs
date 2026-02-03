@@ -81,7 +81,9 @@ impl<'a> SystemService for ProcessManager<'a> {
             proto::PROCESS_PROTO => match label {
                 proto::process::SPAWN => {
                     let name_len = msg[0];
-                    let name_res = unsafe { UTCB::get() }.read_str(0, name_len);
+                    let mut name_buf = alloc::vec![0u8; name_len];
+                    unsafe { UTCB::get() }.read(&mut name_buf);
+                    let name_res = alloc::string::String::from_utf8(name_buf).ok();
                     if let Some(name) = name_res {
                         self.spawn(&name)
                     } else {
