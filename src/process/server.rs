@@ -4,8 +4,8 @@ use crate::log;
 use glenda::cap::{CapPtr, Endpoint, Reply};
 use glenda::error::Error;
 use glenda::interface::{FaultService, MemoryService, ProcessService, SystemService};
-use glenda::ipc::proto;
 use glenda::ipc::{Badge, MsgArgs, MsgFlags, MsgTag, UTCB};
+use glenda::protocol;
 
 impl<'a> SystemService for ProcessManager<'a> {
     fn init(&mut self) -> Result<(), Error> {
@@ -45,16 +45,19 @@ impl<'a> SystemService for ProcessManager<'a> {
 
             let res = self.dispatch(badge, label, proto, flags, args);
             match res {
-                Ok(ret) => {
-                    self.reply(proto::GENERIC_PROTO, proto::generic::REPLY, MsgFlags::OK, ret)?
-                }
+                Ok(ret) => self.reply(
+                    protocol::GENERIC_PROTO,
+                    protocol::generic::REPLY,
+                    MsgFlags::OK,
+                    ret,
+                )?,
                 Err(e) => match e {
                     Error::Success => {
                         continue;
                     }
                     _ => self.reply(
-                        proto::GENERIC_PROTO,
-                        proto::generic::REPLY,
+                        protocol::GENERIC_PROTO,
+                        protocol::generic::REPLY,
                         MsgFlags::ERROR,
                         [e as usize, 0, 0, 0, 0, 0, 0, 0],
                     )?,
@@ -79,8 +82,8 @@ impl<'a> SystemService for ProcessManager<'a> {
             msg
         );
         let ret = match proto {
-            proto::PROCESS_PROTO => match label {
-                proto::process::SPAWN => {
+            protocol::PROCESS_PROTO => match label {
+                protocol::process::SPAWN => {
                     let name_len = msg[0];
                     let mut name_buf = alloc::vec![0u8; name_len];
                     unsafe { UTCB::get() }.read(&mut name_buf);
@@ -91,24 +94,24 @@ impl<'a> SystemService for ProcessManager<'a> {
                         Err(Error::InvalidArgs)
                     }
                 }
-                proto::process::FORK => self.fork(badge),
-                proto::process::EXIT => self.exit(badge, msg[0]).map(|_| 0),
-                proto::process::SBRK => self.brk(badge, msg[0] as isize),
-                proto::process::MMAP => self.mmap(badge, msg[0], msg[1]),
-                proto::process::MUNMAP => self.munmap(badge, msg[0], msg[1]).map(|_| 0),
-                proto::process::INIT => self.procinit(badge),
+                protocol::process::FORK => self.fork(badge),
+                protocol::process::EXIT => self.exit(badge, msg[0]).map(|_| 0),
+                protocol::process::SBRK => self.brk(badge, msg[0] as isize),
+                protocol::process::MMAP => self.mmap(badge, msg[0], msg[1]),
+                protocol::process::MUNMAP => self.munmap(badge, msg[0], msg[1]).map(|_| 0),
+                protocol::process::INIT => self.procinit(badge),
                 _ => Err(Error::InvalidMethod),
             },
-            proto::KERNEL_PROTO => {
+            protocol::KERNEL_PROTO => {
                 let res = match label {
-                    proto::kernel::SYSCALL => self.syscall(badge, msg),
-                    proto::kernel::PAGE_FAULT => self.page_fault(badge, msg[0], msg[1], msg[2]),
-                    proto::kernel::ILLEGAL_INSTRUCTION => {
+                    protocol::kernel::SYSCALL => self.syscall(badge, msg),
+                    protocol::kernel::PAGE_FAULT => self.page_fault(badge, msg[0], msg[1], msg[2]),
+                    protocol::kernel::ILLEGAL_INSTRUCTION => {
                         self.illegal_instrution(badge, msg[0], msg[1])
                     }
-                    proto::kernel::BREAKPOINT => self.breakpoint(badge, msg[0]),
-                    proto::kernel::ACCESS_FAULT => self.access_fault(badge, msg[0], msg[1]),
-                    proto::kernel::ACCESS_MISALIGNED => {
+                    protocol::kernel::BREAKPOINT => self.breakpoint(badge, msg[0]),
+                    protocol::kernel::ACCESS_FAULT => self.access_fault(badge, msg[0], msg[1]),
+                    protocol::kernel::ACCESS_MISALIGNED => {
                         self.access_misaligned(badge, msg[0], msg[1])
                     }
                     _ => self.unknown_fault(badge, msg[0], msg[1], msg[2]),
