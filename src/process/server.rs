@@ -56,7 +56,7 @@ impl<'a> SystemService for ProcessManager<'a> {
                         proto::GENERIC_PROTO,
                         proto::generic::REPLY,
                         MsgFlags::ERROR,
-                        [e as usize, 0, 0, 0, 0,0, 0, 0],
+                        [e as usize, 0, 0, 0, 0, 0, 0, 0],
                     )?,
                 },
             }
@@ -120,7 +120,7 @@ impl<'a> SystemService for ProcessManager<'a> {
             }
             _ => Err(Error::InvalidProtocol),
         }?;
-        Ok([ret, 0, 0, 0, 0,0, 0, 0])
+        Ok([ret, 0, 0, 0, 0, 0, 0, 0])
     }
     fn reply(
         &mut self,
