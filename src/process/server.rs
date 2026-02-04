@@ -24,10 +24,7 @@ impl<'a> SystemService for ProcessManager<'a> {
             return Err(Error::NotInitialized);
         }
         self.running = true;
-        loop {
-            if self.running == false {
-                return Ok(());
-            }
+        while self.running {
             match self.endpoint.recv(self.reply.cap()) {
                 Ok(b) => b,
                 Err(e) => {
@@ -64,6 +61,7 @@ impl<'a> SystemService for ProcessManager<'a> {
                 },
             }
         }
+        Ok(())
     }
     fn dispatch(
         &mut self,
@@ -135,5 +133,7 @@ impl<'a> SystemService for ProcessManager<'a> {
         let tag = MsgTag::new(proto, label, flags);
         self.reply.reply(tag, msg)
     }
-    fn exit() {}
+    fn stop(&mut self) {
+        self.running = false;
+    }
 }
