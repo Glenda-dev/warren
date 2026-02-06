@@ -3,13 +3,12 @@ use crate::log;
 use glenda::arch::mem::PGSIZE;
 use glenda::cap::{CapType, Frame};
 use glenda::error::Error;
-use glenda::interface::{
-    CSpaceService, FaultService, ProcessService, ResourceService, VSpaceService,
-};
+use glenda::interface::{FaultService, ProcessService, ResourceService};
 use glenda::ipc::{Badge, MsgArgs};
 use glenda::mem::Perms;
 use glenda::mem::STACK_VA;
 use glenda::utils::align::align_down;
+use glenda::utils::manager::{CSpaceService, VSpaceService};
 
 const MAX_STACK_SIZE: usize = 8 * 1024 * 1024; // 8MB
 
@@ -46,7 +45,13 @@ impl<'a> FaultService for ProcessManager<'a> {
         // 1. Allocate Frame
         let frame_slot = self.ctx.cspace_mgr.alloc(self.ctx.resource_mgr)?;
 
-        self.ctx.resource_mgr.alloc(CapType::Frame, 1, self.ctx.root_cnode, frame_slot)?;
+        self.ctx.resource_mgr.alloc(
+            Badge::null(),
+            CapType::Frame,
+            1,
+            self.ctx.root_cnode,
+            frame_slot,
+        )?;
 
         // 2. Map Frame
         let page_base = align_down(addr, PGSIZE);

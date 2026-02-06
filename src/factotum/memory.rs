@@ -2,9 +2,10 @@ use super::ProcessManager;
 use glenda::arch::mem::PGSIZE;
 use glenda::cap::{CapType, Frame};
 use glenda::error::Error;
-use glenda::interface::{CSpaceService, MemoryService, ResourceService, VSpaceService};
+use glenda::interface::{MemoryService, ResourceService};
 use glenda::ipc::Badge;
 use glenda::mem::Perms;
+use glenda::utils::manager::{CSpaceService, VSpaceService};
 
 impl<'a> MemoryService for ProcessManager<'a> {
     fn brk(&mut self, pid: Badge, incr: isize) -> Result<usize, Error> {
@@ -22,7 +23,13 @@ impl<'a> MemoryService for ProcessManager<'a> {
 
             for vaddr in (start_page..end_page).step_by(PGSIZE) {
                 let slot = self.ctx.cspace_mgr.alloc(self.ctx.resource_mgr)?;
-                self.ctx.resource_mgr.alloc(CapType::Frame, 1, self.ctx.root_cnode, slot)?;
+                self.ctx.resource_mgr.alloc(
+                    Badge::null(),
+                    CapType::Frame,
+                    1,
+                    self.ctx.root_cnode,
+                    slot,
+                )?;
                 process.vspace_mgr.map_frame(
                     Frame::from(slot),
                     vaddr,
@@ -48,7 +55,13 @@ impl<'a> MemoryService for ProcessManager<'a> {
 
         for v in (start_page..end_page).step_by(PGSIZE) {
             let slot = self.ctx.cspace_mgr.alloc(self.ctx.resource_mgr)?;
-            self.ctx.resource_mgr.alloc(CapType::Frame, 1, self.ctx.root_cnode, slot)?;
+            self.ctx.resource_mgr.alloc(
+                Badge::null(),
+                CapType::Frame,
+                1,
+                self.ctx.root_cnode,
+                slot,
+            )?;
             process.vspace_mgr.map_frame(
                 Frame::from(slot),
                 v,

@@ -1,7 +1,8 @@
 mod data;
 mod fault;
-mod manage;
 mod memory;
+mod process;
+mod resource;
 mod server;
 mod thread;
 
@@ -17,14 +18,23 @@ use glenda::cap::{
     CSPACE_SLOT, KERNEL_SLOT, MMIO_SLOT, MONITOR_SLOT, PLATFORM_SLOT, TCB_SLOT, VSPACE_SLOT,
 };
 use glenda::error::Error;
-use glenda::interface::{CSpaceService, ResourceService, VSpaceService};
+use glenda::interface::ResourceService;
 use glenda::ipc::Badge;
-use glenda::manager::{CSpaceManager, ResourceManager, VSpaceManager};
 use glenda::mem::Perms;
 use glenda::mem::{ENTRY_VA, STACK_VA, TRAPFRAME_VA, UTCB_VA};
+use glenda::utils::BootInfo;
 use glenda::utils::initrd::Initrd;
+use glenda::utils::manager::{CSpaceManager, ResourceManager, VSpaceManager};
+use glenda::utils::manager::{CSpaceService, VSpaceService};
 
 const SERVICE_PRIORITY: u8 = 252;
+
+pub struct InitResources {
+    pub boot_info: BootInfo,
+    pub untyped_cap: CapPtr,
+    pub mmio_cap: CapPtr,
+    pub irq_cap: CapPtr,
+}
 
 pub struct SystemContext<'a> {
     pub root_cnode: CNode,
@@ -90,31 +100,68 @@ impl<'a> ProcessManager<'a> {
         let child_endpoint = Endpoint::from(ep_slot);
 
         let cnode_slot = self.ctx.cspace_mgr.alloc(self.ctx.resource_mgr)?;
-        self.ctx.resource_mgr.alloc(CapType::CNode, 0, self.ctx.root_cnode, cnode_slot)?;
+        self.ctx.resource_mgr.alloc(
+            Badge::null(),
+            CapType::CNode,
+            0,
+            self.ctx.root_cnode,
+            cnode_slot,
+        )?;
         let child_cnode = CNode::from(cnode_slot);
 
         let pd_slot = self.ctx.cspace_mgr.alloc(self.ctx.resource_mgr)?;
-        self.ctx.resource_mgr.alloc(CapType::VSpace, 0, self.ctx.root_cnode, pd_slot)?;
+        self.ctx.resource_mgr.alloc(
+            Badge::null(),
+            CapType::VSpace,
+            0,
+            self.ctx.root_cnode,
+            pd_slot,
+        )?;
         let child_pd = VSpace::from(pd_slot);
 
         let tcb_slot = self.ctx.cspace_mgr.alloc(self.ctx.resource_mgr)?;
-        self.ctx.resource_mgr.alloc(CapType::TCB, 0, self.ctx.root_cnode, tcb_slot)?;
+        self.ctx.resource_mgr.alloc(
+            Badge::null(),
+            CapType::TCB,
+            0,
+            self.ctx.root_cnode,
+            tcb_slot,
+        )?;
         let child_tcb = TCB::from(tcb_slot);
 
         let utcb_slot = self.ctx.cspace_mgr.alloc(self.ctx.resource_mgr)?;
-        self.ctx.resource_mgr.alloc(CapType::Frame, 1, self.ctx.root_cnode, utcb_slot)?;
+        self.ctx.resource_mgr.alloc(
+            Badge::null(),
+            CapType::Frame,
+            1,
+            self.ctx.root_cnode,
+            utcb_slot,
+        )?;
         let child_utcb = Frame::from(utcb_slot);
 
         let trapframe_slot = self.ctx.cspace_mgr.alloc(self.ctx.resource_mgr)?;
-        self.ctx.resource_mgr.alloc(CapType::Frame, 1, self.ctx.root_cnode, trapframe_slot)?;
+        self.ctx.resource_mgr.alloc(
+            Badge::null(),
+            CapType::Frame,
+            1,
+            self.ctx.root_cnode,
+            trapframe_slot,
+        )?;
         let child_trapframe = Frame::from(trapframe_slot);
 
         let stack_slot = self.ctx.cspace_mgr.alloc(self.ctx.resource_mgr)?;
-        self.ctx.resource_mgr.alloc(CapType::Frame, 1, self.ctx.root_cnode, stack_slot)?;
+        self.ctx.resource_mgr.alloc(
+            Badge::null(),
+            CapType::Frame,
+            1,
+            self.ctx.root_cnode,
+            stack_slot,
+        )?;
         let child_stack = Frame::from(stack_slot);
 
         let kstack_slot = self.ctx.cspace_mgr.alloc(self.ctx.resource_mgr)?;
         self.ctx.resource_mgr.alloc(
+            Badge::null(),
             CapType::Frame,
             KSTACK_PAGES,
             self.ctx.root_cnode,

@@ -3,7 +3,7 @@ use alloc::vec::Vec;
 use glenda::cap::{CNode, CapPtr, Frame, TCB, VSpace};
 use glenda::error::Error;
 use glenda::ipc::Badge;
-use glenda::manager::VSpaceManager;
+use glenda::utils::manager::VSpaceManager;
 
 /// Process Control Block in Factotum
 pub struct Process {

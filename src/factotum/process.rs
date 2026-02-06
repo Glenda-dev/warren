@@ -9,12 +9,13 @@ use glenda::arch::mem::{KSTACK_PAGES, PGSIZE};
 use glenda::cap::MONITOR_SLOT;
 use glenda::cap::{CNode, CapType, Frame, Rights, TCB, VSpace};
 use glenda::error::Error;
-use glenda::interface::{CSpaceService, ProcessService, ResourceService, VSpaceService};
+use glenda::interface::{ProcessService, ResourceService};
 use glenda::ipc::Badge;
-use glenda::manager::VSpaceManager;
 use glenda::mem::Perms;
 use glenda::mem::{STACK_VA, TRAPFRAME_VA, UTCB_VA};
 use glenda::utils::align::align_up;
+use glenda::utils::manager::VSpaceManager;
+use glenda::utils::manager::{CSpaceService, VSpaceService};
 
 pub const SERVICE_PRIORITY: u8 = 128;
 
@@ -49,27 +50,58 @@ impl<'a> ProcessService for ProcessManager<'a> {
         let pid = self.alloc_pid()?;
 
         let cnode_slot = self.ctx.cspace_mgr.alloc(self.ctx.resource_mgr)?;
-        self.ctx.resource_mgr.alloc(CapType::CNode, 0, self.ctx.root_cnode, cnode_slot)?;
+        self.ctx.resource_mgr.alloc(
+            Badge::null(),
+            CapType::CNode,
+            0,
+            self.ctx.root_cnode,
+            cnode_slot,
+        )?;
         let child_cnode = CNode::from(cnode_slot);
 
         let pd_slot = self.ctx.cspace_mgr.alloc(self.ctx.resource_mgr)?;
-        self.ctx.resource_mgr.alloc(CapType::VSpace, 0, self.ctx.root_cnode, pd_slot)?;
+        self.ctx.resource_mgr.alloc(
+            Badge::null(),
+            CapType::VSpace,
+            0,
+            self.ctx.root_cnode,
+            pd_slot,
+        )?;
         let child_pd = VSpace::from(pd_slot);
 
         let tcb_slot = self.ctx.cspace_mgr.alloc(self.ctx.resource_mgr)?;
-        self.ctx.resource_mgr.alloc(CapType::TCB, 0, self.ctx.root_cnode, tcb_slot)?;
+        self.ctx.resource_mgr.alloc(
+            Badge::null(),
+            CapType::TCB,
+            0,
+            self.ctx.root_cnode,
+            tcb_slot,
+        )?;
         let child_tcb = TCB::from(tcb_slot);
 
         let utcb_slot = self.ctx.cspace_mgr.alloc(self.ctx.resource_mgr)?;
-        self.ctx.resource_mgr.alloc(CapType::Frame, 1, self.ctx.root_cnode, utcb_slot)?;
+        self.ctx.resource_mgr.alloc(
+            Badge::null(),
+            CapType::Frame,
+            1,
+            self.ctx.root_cnode,
+            utcb_slot,
+        )?;
         let child_utcb = Frame::from(utcb_slot);
 
         let trapframe_slot = self.ctx.cspace_mgr.alloc(self.ctx.resource_mgr)?;
-        self.ctx.resource_mgr.alloc(CapType::Frame, 1, self.ctx.root_cnode, trapframe_slot)?;
+        self.ctx.resource_mgr.alloc(
+            Badge::null(),
+            CapType::Frame,
+            1,
+            self.ctx.root_cnode,
+            trapframe_slot,
+        )?;
         let child_trapframe = Frame::from(trapframe_slot);
 
         let kstack_slot = self.ctx.cspace_mgr.alloc(self.ctx.resource_mgr)?;
         self.ctx.resource_mgr.alloc(
+            Badge::null(),
             CapType::Frame,
             KSTACK_PAGES,
             self.ctx.root_cnode,
@@ -146,7 +178,6 @@ impl<'a> ProcessService for ProcessManager<'a> {
         } else {
             log!("Failed to find process with pid: {}", pid);
         }
-        unreachable!();
         Err(Error::Success)
     }
     fn load_image(&mut self, pid: Badge, elf_data: &[u8]) -> Result<(usize, usize), Error> {
@@ -190,6 +221,7 @@ impl<'a> ProcessService for ProcessManager<'a> {
 
                     let frame_cap = self.ctx.cspace_mgr.alloc(self.ctx.resource_mgr)?;
                     self.ctx.resource_mgr.alloc(
+                        Badge::null(),
                         CapType::Frame,
                         num_pages,
                         root_cnode,
@@ -254,13 +286,5 @@ impl<'a> ProcessService for ProcessManager<'a> {
         let heap = align_up(max_vaddr, PGSIZE);
         log!("Image loaded with entry_point: {:#x}, heap: {:#x}", ep, heap);
         Ok((ep, heap))
-    }
-}
-
-impl<'a> ProcessManager<'a> {
-    #[warn(deprecated_in_future)]
-    pub fn procinit(&mut self, pid: Badge) -> Result<usize, Error> {
-        let process = self.processes.get_mut(&pid).ok_or(Error::NotFound)?;
-        Ok(process.heap_start)
     }
 }

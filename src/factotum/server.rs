@@ -1,9 +1,13 @@
 use super::ProcessManager;
 use crate::layout::INIT_NAME;
 use crate::log;
-use glenda::cap::{CapPtr, Endpoint, Reply};
+use core::mem::transmute;
+use glenda::cap::{CNode, CapPtr, Endpoint, Reply};
 use glenda::error::Error;
-use glenda::interface::{FaultService, MemoryService, ProcessService, SystemService};
+use glenda::interface::{
+    FaultService, InitResourceService, MemoryService, ProcessService, ResourceService,
+    SystemService,
+};
 use glenda::ipc::{Badge, MsgArgs, MsgFlags, MsgTag, UTCB};
 use glenda::protocol;
 
@@ -52,6 +56,12 @@ impl<'a> SystemService for ProcessManager<'a> {
                     Error::Success => {
                         continue;
                     }
+                    Error::HasCap => self.reply(
+                        protocol::GENERIC_PROTO,
+                        protocol::generic::REPLY,
+                        MsgFlags::OK | MsgFlags::HAS_CAP,
+                        [0, 0, 0, 0, 0, 0, 0, 0],
+                    )?,
                     _ => self.reply(
                         protocol::GENERIC_PROTO,
                         protocol::generic::REPLY,
@@ -79,25 +89,36 @@ impl<'a> SystemService for ProcessManager<'a> {
             flags,
             msg
         );
+        let utcb = unsafe { UTCB::get() };
         let ret = match proto {
             protocol::PROCESS_PROTO => match label {
-                protocol::process::SPAWN => {
-                    let name_len = msg[0];
-                    let mut name_buf = alloc::vec![0u8; name_len];
-                    unsafe { UTCB::get() }.read(&mut name_buf);
-                    let name_res = alloc::string::String::from_utf8(name_buf).ok();
-                    if let Some(name) = name_res {
-                        self.spawn(&name)
-                    } else {
-                        Err(Error::InvalidArgs)
-                    }
-                }
+                protocol::process::SPAWN => Err(Error::NotImplemented),
                 protocol::process::FORK => self.fork(badge),
                 protocol::process::EXIT => self.exit(badge, msg[0]).map(|_| 0),
-                protocol::process::SBRK => self.brk(badge, msg[0] as isize),
-                protocol::process::MMAP => self.mmap(badge, msg[0], msg[1]),
-                protocol::process::MUNMAP => self.munmap(badge, msg[0], msg[1]).map(|_| 0),
-                protocol::process::INIT => self.procinit(badge),
+                _ => Err(Error::InvalidMethod),
+            },
+            protocol::RESOURCE_PROTO => match label {
+                protocol::resource::ALLOC => self
+                    .alloc(
+                        badge,
+                        unsafe { transmute(msg[0]) },
+                        msg[1],
+                        CNode::from(CapPtr::from(msg[2])),
+                        CapPtr::from(msg[3]),
+                    )
+                    .map(|_| 0),
+                protocol::resource::FREE => {
+                    self.free(badge, unsafe { transmute(msg[0]) }).map(|_| 0)
+                }
+                protocol::resource::SBRK => self.brk(badge, msg[0] as isize),
+                protocol::resource::MMAP => self.mmap(badge, msg[0], msg[1]),
+                protocol::resource::MUNMAP => self.munmap(badge, msg[0], msg[1]).map(|_| 0),
+                protocol::resource::GET_CAP => {
+                    let cap = self.get_cap(unsafe { transmute(msg[0]) })?;
+                    utcb.cap_transfer = cap;
+                    Err(Error::HasCap)
+                }
+                protocol::resource::GET_RESOURCE => Err(Error::NotImplemented),
                 _ => Err(Error::InvalidMethod),
             },
             protocol::KERNEL_PROTO => {

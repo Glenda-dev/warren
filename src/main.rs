@@ -6,19 +6,19 @@ extern crate alloc;
 use glenda;
 
 mod elf;
+mod factotum;
 mod layout;
-mod process;
 
+use factotum::ProcessManager;
 use glenda::cap::CapType;
 use glenda::cap::{CSPACE_CAP, MONITOR_CAP, MONITOR_SLOT, REPLY_SLOT, VSPACE_CAP};
 use glenda::error::Error;
 use glenda::interface::{ResourceService, SystemService};
-use glenda::manager::{CSpaceManager, ResourceManager, VSpaceManager};
+use glenda::ipc::Badge;
 use glenda::mem::BOOTINFO_VA;
-use glenda::utils::bootinfo;
 use glenda::utils::bootinfo::BootInfo;
 use glenda::utils::initrd::Initrd;
-use process::ProcessManager;
+use glenda::utils::manager::{CSpaceManager, ResourceManager, VSpaceManager};
 
 #[macro_export]
 macro_rules! log {
@@ -33,10 +33,6 @@ fn main() -> usize {
 
     // Parse BootInfo
     let bootinfo = unsafe { &*(BOOTINFO_VA as *const BootInfo) };
-    if bootinfo.magic != bootinfo::BOOTINFO_MAGIC {
-        log!("Invalid BootInfo Magic: {:#x}", bootinfo.magic);
-        return 1;
-    }
     log!("{}", bootinfo);
 
     // Parse Initrd
@@ -59,7 +55,9 @@ fn main() -> usize {
     let mut cspace_mgr = CSpaceManager::new(CSPACE_CAP, 16);
 
     // Allocated caps
-    if let Err(e) = resource_mgr.alloc(CapType::Endpoint, 0, CSPACE_CAP, MONITOR_SLOT) {
+    if let Err(e) =
+        resource_mgr.alloc(Badge::null(), CapType::Endpoint, 0, CSPACE_CAP, MONITOR_SLOT)
+    {
         log!("Failed to create endpoint: {:?}", e);
         return 1;
     }
