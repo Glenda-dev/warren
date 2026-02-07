@@ -20,9 +20,10 @@ use glenda::utils::manager::{CSpaceService, VSpaceService};
 pub const SERVICE_PRIORITY: u8 = 128;
 
 impl<'a> ProcessService for ProcessManager<'a> {
-    fn spawn(&mut self, name: &str) -> Result<usize, Error> {
+    fn spawn(&mut self, parent_pid: Badge, name: &str) -> Result<usize, Error> {
         let file = self.initrd.get_file(name).ok_or(Error::NotFound)?.to_vec();
-        let process = self.create(name)?;
+        let mut process = self.create(name)?;
+        process.parent_pid = parent_pid;
         let pid = process.pid;
         self.processes.insert(pid, process);
         match self.load_image(pid, &file) {
@@ -180,6 +181,11 @@ impl<'a> ProcessService for ProcessManager<'a> {
         }
         Err(Error::Success)
     }
+
+    fn get_pid(&mut self, pid: Badge) -> Result<usize, Error> {
+        Ok(pid.bits())
+    }
+
     fn load_image(&mut self, pid: Badge, elf_data: &[u8]) -> Result<(usize, usize), Error> {
         let elf = ElfFile::new(elf_data).map_err(|_| Error::InvalidArgs)?;
         let mut max_vaddr = 0;

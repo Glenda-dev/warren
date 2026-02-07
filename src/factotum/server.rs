@@ -8,13 +8,13 @@ use glenda::interface::{
     FaultService, InitResourceService, MemoryService, ProcessService, ResourceService,
     SystemService,
 };
-use glenda::ipc::{Badge, MsgArgs, MsgFlags, MsgTag, UTCB};
+use glenda::ipc::{Badge, MsgFlags, MsgTag, UTCB};
 use glenda::protocol;
 
 impl<'a> SystemService for ProcessManager<'a> {
     fn init(&mut self) -> Result<(), Error> {
         // Use trait interface to spawn
-        self.spawn(INIT_NAME).map(|pid| {
+        self.spawn(Badge::null(), INIT_NAME).map(|pid| {
             log!("Started init {} with PID: {}", INIT_NAME, pid);
         })
     }
@@ -39,48 +39,44 @@ impl<'a> SystemService for ProcessManager<'a> {
             let utcb = unsafe { UTCB::get() };
             let msg_info = utcb.msg_tag;
             let badge = utcb.badge;
-            let label = msg_info.label();
-            let proto = msg_info.proto();
-            let flags = msg_info.flags();
-            let args = utcb.mrs_regs;
 
-            let res = self.dispatch(badge, label, proto, flags, args);
+            let res = self.dispatch(badge, msg_info);
             match res {
-                Ok(ret) => self.reply(
+                Ok(_) => self.reply(MsgTag::new(
                     protocol::GENERIC_PROTO,
                     protocol::generic::REPLY,
                     MsgFlags::OK,
-                    ret,
-                )?,
+                ))?,
                 Err(e) => match e {
                     Error::Success => {
                         continue;
                     }
-                    Error::HasCap => self.reply(
+                    Error::HasCap => self.reply(MsgTag::new(
                         protocol::GENERIC_PROTO,
                         protocol::generic::REPLY,
                         MsgFlags::OK | MsgFlags::HAS_CAP,
-                        [0, 0, 0, 0, 0, 0, 0, 0],
-                    )?,
-                    _ => self.reply(
-                        protocol::GENERIC_PROTO,
-                        protocol::generic::REPLY,
-                        MsgFlags::ERROR,
-                        [e as usize, 0, 0, 0, 0, 0, 0, 0],
-                    )?,
+                    ))?,
+                    _ => {
+                        let utcb = unsafe { UTCB::get() };
+                        utcb.mrs_regs[0] = e as usize;
+                        self.reply(MsgTag::new(
+                            protocol::GENERIC_PROTO,
+                            protocol::generic::REPLY,
+                            MsgFlags::ERROR,
+                        ))?
+                    }
                 },
             }
         }
         Ok(())
     }
-    fn dispatch(
-        &mut self,
-        badge: Badge,
-        label: usize,
-        proto: usize,
-        flags: MsgFlags,
-        msg: MsgArgs,
-    ) -> Result<MsgArgs, Error> {
+    fn dispatch(&mut self, badge: Badge, info: MsgTag) -> Result<(), Error> {
+        let label = info.label();
+        let proto = info.proto();
+        let flags = info.flags();
+        let utcb = unsafe { UTCB::get() };
+        let msg = utcb.mrs_regs;
+
         log!(
             "Received message: badge={}, label={:#x}, proto={:#x}, flags={}, msg={:?}",
             badge,
@@ -89,7 +85,7 @@ impl<'a> SystemService for ProcessManager<'a> {
             flags,
             msg
         );
-        let utcb = unsafe { UTCB::get() };
+
         let ret = match proto {
             protocol::PROCESS_PROTO => match label {
                 protocol::process::SPAWN => Err(Error::NotImplemented),
@@ -116,14 +112,14 @@ impl<'a> SystemService for ProcessManager<'a> {
                 protocol::resource::GET_CAP => {
                     let cap = self.get_cap(unsafe { transmute(msg[0]) })?;
                     utcb.cap_transfer = cap;
-                    Err(Error::HasCap)
+                    return Err(Error::HasCap);
                 }
                 protocol::resource::GET_RESOURCE => Err(Error::NotImplemented),
                 _ => Err(Error::InvalidMethod),
             },
             protocol::KERNEL_PROTO => {
                 let res = match label {
-                    protocol::kernel::SYSCALL => self.syscall(badge, msg),
+                    protocol::kernel::SYSCALL => self.syscall(badge, &msg),
                     protocol::kernel::PAGE_FAULT => self.page_fault(badge, msg[0], msg[1], msg[2]),
                     protocol::kernel::ILLEGAL_INSTRUCTION => {
                         self.illegal_instrution(badge, msg[0], msg[1])
@@ -138,21 +134,15 @@ impl<'a> SystemService for ProcessManager<'a> {
                 if let Err(e) = res {
                     log!("Failed to handle kernel protocol: {:?}", e);
                 }
-                Err(Error::Success)
+                return Err(Error::Success);
             }
             _ => Err(Error::InvalidProtocol),
         }?;
-        Ok([ret, 0, 0, 0, 0, 0, 0, 0])
+        utcb.mrs_regs[0] = ret;
+        Ok(())
     }
-    fn reply(
-        &mut self,
-        label: usize,
-        proto: usize,
-        flags: MsgFlags,
-        msg: MsgArgs,
-    ) -> Result<(), Error> {
-        let tag = MsgTag::new(proto, label, flags);
-        self.reply.reply(tag, msg)
+    fn reply(&mut self, info: MsgTag) -> Result<(), Error> {
+        self.reply.reply(info)
     }
     fn stop(&mut self) {
         self.running = false;

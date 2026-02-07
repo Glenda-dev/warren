@@ -4,7 +4,7 @@ use glenda::arch::mem::PGSIZE;
 use glenda::cap::{CapType, Frame};
 use glenda::error::Error;
 use glenda::interface::{FaultService, ProcessService, ResourceService};
-use glenda::ipc::{Badge, MsgArgs};
+use glenda::ipc::{Badge, MsgArgs, UTCB};
 use glenda::mem::Perms;
 use glenda::mem::STACK_VA;
 use glenda::utils::align::align_down;
@@ -109,7 +109,7 @@ impl<'a> FaultService for ProcessManager<'a> {
         self.exit(pid, 0x04).map(|_| ())
     }
 
-    fn syscall(&mut self, pid: Badge, reg: MsgArgs) -> Result<(), Error> {
+    fn syscall(&mut self, pid: Badge, reg: &MsgArgs) -> Result<(), Error> {
         log!(
             "Non-Native Syscall: pid={}, regs=[{},{},{},{},{},{},{},{}]",
             pid,
