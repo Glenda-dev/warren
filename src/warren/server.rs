@@ -1,6 +1,7 @@
 use super::ProcessManager;
 use crate::layout::INIT_NAME;
 use crate::log;
+use alloc::string::ToString;
 use core::mem::transmute;
 use glenda::cap::{CNode, CapPtr, Endpoint, Reply};
 use glenda::error::Error;
@@ -14,7 +15,7 @@ use glenda::protocol;
 impl<'a> SystemService for ProcessManager<'a> {
     fn init(&mut self) -> Result<(), Error> {
         // Use trait interface to spawn
-        self.spawn(Badge::null(), INIT_NAME).map(|pid| {
+        self.spawn(Badge::null(), INIT_NAME.to_string()).map(|pid| {
             log!("Started init {} with PID: {}", INIT_NAME, pid);
         })
     }
@@ -42,28 +43,27 @@ impl<'a> SystemService for ProcessManager<'a> {
 
             let res = self.dispatch(badge, msg_info);
             match res {
-                Ok(_) => self.reply(MsgTag::new(
-                    protocol::GENERIC_PROTO,
-                    protocol::generic::REPLY,
-                    MsgFlags::OK,
-                ))?,
+                Ok(_) => {
+                    let tag = MsgTag::new(
+                        protocol::GENERIC_PROTO,
+                        protocol::generic::REPLY,
+                        MsgFlags::OK,
+                    );
+                    self.reply(tag)?
+                }
                 Err(e) => match e {
                     Error::Success => {
                         continue;
                     }
-                    Error::HasCap => self.reply(MsgTag::new(
-                        protocol::GENERIC_PROTO,
-                        protocol::generic::REPLY,
-                        MsgFlags::OK | MsgFlags::HAS_CAP,
-                    ))?,
                     _ => {
                         let utcb = unsafe { UTCB::get() };
                         utcb.mrs_regs[0] = e as usize;
-                        self.reply(MsgTag::new(
+                        let tag = MsgTag::new(
                             protocol::GENERIC_PROTO,
                             protocol::generic::REPLY,
                             MsgFlags::ERROR,
-                        ))?
+                        );
+                        self.reply(tag)?
                     }
                 },
             }

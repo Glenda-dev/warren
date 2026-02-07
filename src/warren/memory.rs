@@ -1,4 +1,5 @@
 use super::ProcessManager;
+use crate::log;
 use glenda::arch::mem::PGSIZE;
 use glenda::cap::{CapType, Frame};
 use glenda::error::Error;
@@ -9,6 +10,7 @@ use glenda::utils::manager::{CSpaceService, VSpaceService};
 
 impl<'a> MemoryService for ProcessManager<'a> {
     fn brk(&mut self, pid: Badge, incr: isize) -> Result<usize, Error> {
+        log!("brk: pid={}, incr={:#x}", pid, incr);
         let process = self.processes.get_mut(&pid).ok_or(Error::NotFound)?;
         let old_brk = process.heap_brk;
         let new_brk = (old_brk as isize + incr) as usize;
@@ -42,10 +44,12 @@ impl<'a> MemoryService for ProcessManager<'a> {
             }
         }
         process.heap_brk = new_brk;
+        log!("brk: new_brk={:#x}", new_brk);
         Ok(new_brk)
     }
 
     fn mmap(&mut self, pid: Badge, addr: usize, len: usize) -> Result<usize, Error> {
+        log!("mmap: pid={}, addr={:#x}, len={:#x}", pid, addr, len);
         let process = self.processes.get_mut(&pid).ok_or(Error::NotFound)?;
 
         let vaddr = addr;
@@ -76,6 +80,7 @@ impl<'a> MemoryService for ProcessManager<'a> {
     }
 
     fn munmap(&mut self, pid: Badge, addr: usize, len: usize) -> Result<(), Error> {
+        log!("munmap: pid={}, addr={:#x}, len={:#x}", pid, addr, len);
         if addr % PGSIZE != 0 {
             return Err(Error::InvalidArgs);
         }

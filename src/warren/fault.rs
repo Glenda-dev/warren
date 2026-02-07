@@ -4,7 +4,7 @@ use glenda::arch::mem::PGSIZE;
 use glenda::cap::{CapType, Frame};
 use glenda::error::Error;
 use glenda::interface::{FaultService, ProcessService, ResourceService};
-use glenda::ipc::{Badge, MsgArgs, UTCB};
+use glenda::ipc::{Badge, MsgArgs};
 use glenda::mem::Perms;
 use glenda::mem::STACK_VA;
 use glenda::utils::align::align_down;

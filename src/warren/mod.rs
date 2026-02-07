@@ -9,7 +9,7 @@ mod thread;
 pub use data::*;
 pub use thread::TLS;
 
-use crate::layout::{HEAP_SIZE, HEAP_VA, STACK_SIZE};
+use crate::layout::STACK_SIZE;
 use alloc::collections::BTreeMap;
 use alloc::string::ToString;
 use glenda::arch::mem::{KSTACK_PAGES, PGSIZE};
@@ -21,7 +21,7 @@ use glenda::error::Error;
 use glenda::interface::ResourceService;
 use glenda::ipc::Badge;
 use glenda::mem::Perms;
-use glenda::mem::{ENTRY_VA, STACK_VA, TRAPFRAME_VA, UTCB_VA};
+use glenda::mem::{ENTRY_VA, HEAP_PAGES, HEAP_SIZE, HEAP_VA, STACK_VA, TRAPFRAME_VA, UTCB_VA};
 use glenda::utils::BootInfo;
 use glenda::utils::initrd::Initrd;
 use glenda::utils::manager::{CSpaceManager, ResourceManager, VSpaceManager};
@@ -169,6 +169,16 @@ impl<'a> ProcessManager<'a> {
         )?;
         let child_kstack = Frame::from(kstack_slot);
 
+        let heap_slot = self.ctx.cspace_mgr.alloc(self.ctx.resource_mgr)?;
+        self.ctx.resource_mgr.alloc(
+            Badge::null(),
+            CapType::Frame,
+            HEAP_PAGES,
+            self.ctx.root_cnode,
+            heap_slot,
+        )?;
+        let child_heap = Frame::from(heap_slot);
+
         child_cnode.copy(child_pd.cap(), VSPACE_SLOT, Rights::ALL)?;
         child_cnode.copy(child_cnode.cap(), CSPACE_SLOT, Rights::ALL)?;
         child_cnode.copy(child_tcb.cap(), TCB_SLOT, Rights::ALL)?;
@@ -211,6 +221,15 @@ impl<'a> ProcessManager<'a> {
             self.ctx.cspace_mgr,
             self.ctx.root_cnode,
         )?;
+        vspace_mgr.map_frame(
+            child_heap,
+            HEAP_VA,
+            Perms::READ | Perms::WRITE | Perms::USER,
+            HEAP_PAGES,
+            self.ctx.resource_mgr,
+            self.ctx.cspace_mgr,
+            self.ctx.root_cnode,
+        )?;
         vspace_mgr.setup()?;
 
         let mut process = Process::new(
@@ -225,6 +244,8 @@ impl<'a> ProcessManager<'a> {
             STACK_VA,
         );
         process.stack_pages = 1;
+        process.heap_start = HEAP_VA;
+        process.heap_brk = HEAP_VA + HEAP_SIZE;
         process.allocated_slots.push(cnode_slot);
         process.allocated_slots.push(pd_slot);
         process.allocated_slots.push(tcb_slot);
@@ -233,6 +254,7 @@ impl<'a> ProcessManager<'a> {
         process.allocated_slots.push(kstack_slot);
         process.allocated_slots.push(ep_slot);
         process.allocated_slots.push(stack_slot);
+        process.allocated_slots.push(heap_slot);
         Ok(process)
     }
 }

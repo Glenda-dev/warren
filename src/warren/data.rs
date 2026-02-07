@@ -68,10 +68,4 @@ impl Process {
             stack_pages: 0,
         }
     }
-
-    pub fn setup_heap(&mut self, addr: usize, size: usize) -> Result<(), Error> {
-        self.heap_start = addr;
-        self.heap_brk = self.heap_start + size;
-        Ok(())
-    }
 }
