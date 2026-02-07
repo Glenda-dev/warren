@@ -65,7 +65,7 @@ impl<'a> FaultService for ProcessManager<'a> {
             1,
             self.ctx.resource_mgr,
             self.ctx.cspace_mgr,
-            self.ctx.root_cnode, // Using Factotum's cnode for mapping bookkeeping
+            self.ctx.root_cnode, // Using Warren's cnode for mapping bookkeeping
         )?;
 
         // 3. Record Resource

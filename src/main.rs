@@ -6,10 +6,9 @@ extern crate alloc;
 use glenda;
 
 mod elf;
-mod factotum;
 mod layout;
+mod warren;
 
-use factotum::ProcessManager;
 use glenda::cap::CapType;
 use glenda::cap::{CSPACE_CAP, MONITOR_CAP, MONITOR_SLOT, REPLY_SLOT, VSPACE_CAP};
 use glenda::error::Error;
@@ -19,17 +18,18 @@ use glenda::mem::BOOTINFO_VA;
 use glenda::utils::bootinfo::BootInfo;
 use glenda::utils::initrd::Initrd;
 use glenda::utils::manager::{CSpaceManager, ResourceManager, VSpaceManager};
+use warren::ProcessManager;
 
 #[macro_export]
 macro_rules! log {
     ($($arg:tt)*) => ({
-        glenda::println!("Factotum: {}", format_args!($($arg)*));
+        glenda::println!("Warren: {}", format_args!($($arg)*));
     })
 }
 
 #[unsafe(no_mangle)]
 fn main() -> usize {
-    log!("Starting Factotum Manager...");
+    log!("Starting Warren Manager...");
 
     // Parse BootInfo
     let bootinfo = unsafe { &*(BOOTINFO_VA as *const BootInfo) };
@@ -41,12 +41,12 @@ fn main() -> usize {
 
     // Safety check
     if initrd_start == 0 || initrd_size == 0 {
-        panic!("Factotum: Initrd info missing in BootInfo");
+        panic!("Warren: Initrd info missing in BootInfo");
     }
 
     let initrd_slice =
         unsafe { core::slice::from_raw_parts(initrd_start as *const u8, initrd_size) };
-    let initrd = Initrd::new(initrd_slice).expect("Factotum: Failed to parse initrd");
+    let initrd = Initrd::new(initrd_slice).expect("Warren: Failed to parse initrd");
     log!("Initrd parsed. Size: {} KB", initrd_size / 1024);
 
     // Init Resource Manager
@@ -62,7 +62,7 @@ fn main() -> usize {
         return 1;
     }
 
-    // Initialize Factotum Manager
+    // Initialize Warren Manager
     let mut manager = ProcessManager::new(
         CSPACE_CAP,
         &mut vspace_mgr,
@@ -70,15 +70,15 @@ fn main() -> usize {
         &mut cspace_mgr,
         initrd,
     );
-    if let Err(e) = load_factotum(&mut manager) {
+    if let Err(e) = load_warren(&mut manager) {
         log!("Failed to load: {:?}", e);
         return 1;
     }
-    manager.run().expect("Factotum Manager exited");
+    manager.run().expect("Warren Manager exited");
     1
 }
 
-fn load_factotum(manager: &mut ProcessManager) -> Result<(), Error> {
+fn load_warren(manager: &mut ProcessManager) -> Result<(), Error> {
     manager.listen(MONITOR_CAP, REPLY_SLOT)?;
     manager.init()?;
     Ok(())

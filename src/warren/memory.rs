@@ -83,7 +83,7 @@ impl<'a> MemoryService for ProcessManager<'a> {
         process.vspace_mgr.unmap(
             addr,
             (len + PGSIZE - 1) / PGSIZE,
-            self.ctx.resource_mgr, // Use Factotum's resource manager to free slots
+            self.ctx.resource_mgr, // Use Warren's resource manager to free slots
             self.ctx.root_cnode,   // Process cnode where cap resides
         )
     }

@@ -1,7 +1,8 @@
 [package]
-name = "factotum"
+name = "warren"
 version = "0.1.0"
 edition = "2024"
+description = "Root Task for Glenda Microkernel"
 
 [dependencies]
 libglenda-rs = { path = "../../lib/libglenda-rs", features = ["rt-bare"] }

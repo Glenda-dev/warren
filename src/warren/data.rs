@@ -5,7 +5,7 @@ use glenda::error::Error;
 use glenda::ipc::Badge;
 use glenda::utils::manager::VSpaceManager;
 
-/// Process Control Block in Factotum
+/// Process Control Block in Warren
 pub struct Process {
     pub pid: Badge,
     pub parent_pid: Badge,
@@ -27,7 +27,7 @@ pub struct Process {
     pub stack_base: usize,
     pub stack_pages: usize,
 
-    pub allocated_slots: Vec<CapPtr>, // 记录 Factotum 为此进程占用的所有槽位
+    pub allocated_slots: Vec<CapPtr>, // 记录 Warren 为此进程占用的所有槽位
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
