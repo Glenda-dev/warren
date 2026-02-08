@@ -46,6 +46,9 @@ impl<'a> InitResourceService for WarrenManager<'a> {
             InitCap::Irq => IRQ_SLOT,
             InitCap::Mmio => MMIO_SLOT,
             InitCap::Untyped => UNTYPED_SLOT,
+            _ => {
+                return Err(Error::InvalidArgs);
+            }
         };
         Ok(cptr)
     }
