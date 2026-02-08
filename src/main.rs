@@ -12,13 +12,12 @@ mod warren;
 use glenda::cap::CapType;
 use glenda::cap::{CSPACE_CAP, MONITOR_CAP, MONITOR_SLOT, REPLY_SLOT, VSPACE_CAP};
 use glenda::error::Error;
-use glenda::interface::{ResourceService, SystemService};
-use glenda::ipc::Badge;
+use glenda::interface::SystemService;
 use glenda::mem::BOOTINFO_VA;
 use glenda::utils::bootinfo::BootInfo;
 use glenda::utils::initrd::Initrd;
-use glenda::utils::manager::{CSpaceManager, ResourceManager, VSpaceManager};
-use warren::ProcessManager;
+use glenda::utils::manager::{CSpaceManager, UntypedManager, UntypedService, VSpaceManager};
+use warren::WarrenManager;
 
 #[macro_export]
 macro_rules! log {
@@ -50,26 +49,19 @@ fn main() -> usize {
     log!("Initrd parsed. Size: {} KB", initrd_size / 1024);
 
     // Init Resource Manager
-    let mut resource_mgr = ResourceManager::new(bootinfo);
+    let mut untyped_mgr = UntypedManager::new(bootinfo);
     let mut vspace_mgr = VSpaceManager::new(VSPACE_CAP, layout::SCRATCH_VA, layout::SCRATCH_SIZE);
     let mut cspace_mgr = CSpaceManager::new(CSPACE_CAP, 16);
 
     // Allocated caps
-    if let Err(e) =
-        resource_mgr.alloc(Badge::null(), CapType::Endpoint, 0, CSPACE_CAP, MONITOR_SLOT)
-    {
+    if let Err(e) = untyped_mgr.alloc(CapType::Endpoint, 0, CSPACE_CAP, MONITOR_SLOT) {
         log!("Failed to create endpoint: {:?}", e);
         return 1;
     }
 
     // Initialize Warren Manager
-    let mut manager = ProcessManager::new(
-        CSPACE_CAP,
-        &mut vspace_mgr,
-        &mut resource_mgr,
-        &mut cspace_mgr,
-        initrd,
-    );
+    let mut manager =
+        WarrenManager::new(CSPACE_CAP, &mut vspace_mgr, &mut untyped_mgr, &mut cspace_mgr, initrd);
     if let Err(e) = load_warren(&mut manager) {
         log!("Failed to load: {:?}", e);
         return 1;
@@ -78,7 +70,7 @@ fn main() -> usize {
     1
 }
 
-fn load_warren(manager: &mut ProcessManager) -> Result<(), Error> {
+fn load_warren(manager: &mut WarrenManager) -> Result<(), Error> {
     manager.listen(MONITOR_CAP, REPLY_SLOT)?;
     manager.init()?;
     Ok(())

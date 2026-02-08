@@ -1,18 +1,18 @@
-use super::ProcessManager;
+use super::WarrenManager;
 use crate::log;
 use glenda::arch::mem::PGSIZE;
 use glenda::cap::{CapType, Frame};
 use glenda::error::Error;
-use glenda::interface::{FaultService, ProcessService, ResourceService};
+use glenda::interface::{FaultService, ProcessService};
 use glenda::ipc::{Badge, MsgArgs};
 use glenda::mem::Perms;
 use glenda::mem::STACK_VA;
 use glenda::utils::align::align_down;
-use glenda::utils::manager::{CSpaceService, VSpaceService};
+use glenda::utils::manager::{CSpaceService, UntypedService, VSpaceService};
 
 const MAX_STACK_SIZE: usize = 8 * 1024 * 1024; // 8MB
 
-impl<'a> FaultService for ProcessManager<'a> {
+impl<'a> FaultService for WarrenManager<'a> {
     fn page_fault(
         &mut self,
         pid: Badge,
@@ -43,15 +43,9 @@ impl<'a> FaultService for ProcessManager<'a> {
         );
 
         // 1. Allocate Frame
-        let frame_slot = self.ctx.cspace_mgr.alloc(self.ctx.resource_mgr)?;
+        let frame_slot = self.ctx.cspace_mgr.alloc(self.ctx.untyped_mgr)?;
 
-        self.ctx.resource_mgr.alloc(
-            Badge::null(),
-            CapType::Frame,
-            1,
-            self.ctx.root_cnode,
-            frame_slot,
-        )?;
+        self.ctx.untyped_mgr.alloc(CapType::Frame, 1, self.ctx.root_cnode, frame_slot)?;
 
         // 2. Map Frame
         let page_base = align_down(addr, PGSIZE);
@@ -63,7 +57,7 @@ impl<'a> FaultService for ProcessManager<'a> {
             page_base,
             perms,
             1,
-            self.ctx.resource_mgr,
+            self.ctx.untyped_mgr,
             self.ctx.cspace_mgr,
             self.ctx.root_cnode, // Using Warren's cnode for mapping bookkeeping
         )?;

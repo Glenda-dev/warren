@@ -1,7 +1,6 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 use glenda::cap::{CNode, CapPtr, Frame, TCB, VSpace};
-use glenda::error::Error;
 use glenda::ipc::Badge;
 use glenda::utils::manager::VSpaceManager;
 

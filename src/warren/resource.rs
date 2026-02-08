@@ -1,47 +1,79 @@
-use crate::ProcessManager;
+use crate::WarrenManager;
 use crate::log;
-use alloc::boxed::Box;
 use alloc::string::String;
-use glenda::cap::{CNode, CapPtr, CapType};
+use glenda::arch::mem::PGSIZE;
+use glenda::cap::{CapPtr, CapType, Frame};
+use glenda::cap::{IRQ_SLOT, KERNEL_SLOT, MMIO_SLOT, UNTYPED_SLOT};
 use glenda::error::Error;
 use glenda::interface::{InitResourceService, ResourceService};
 use glenda::ipc::Badge;
-use glenda::protocol::resource::{InitCap, InitResource};
+use glenda::mem::Perms;
+use glenda::protocol::resource::InitCap;
+use glenda::utils::manager::{CSpaceService, UntypedService, VSpaceService};
 
-impl ResourceService for ProcessManager<'_> {
-    fn alloc(
-        &mut self,
-        pid: Badge,
-        obj_type: CapType,
-        flags: usize,
-        dest_cnode: CNode,
-        dest_slot: CapPtr,
-    ) -> Result<(), Error> {
+pub struct InitRes {
+    pub kernel_cap: CapPtr,
+    pub irq_cap: CapPtr,
+    pub mmio_cap: CapPtr,
+    pub untyped_cap: CapPtr,
+    pub bootinfo_cap: CapPtr,
+}
+
+impl<'a> ResourceService for WarrenManager<'a> {
+    fn alloc(&mut self, pid: Badge, obj_type: CapType, flags: usize) -> Result<CapPtr, Error> {
         log!("alloc: pid={}, type={:?}, flags={:#x}", pid, obj_type, flags);
-        let process = self.processes.get_mut(&pid).ok_or(Error::NotFound)?;
-        unimplemented!()
+        let p = self.processes.get_mut(&pid).ok_or(Error::NotFound)?;
+        let slot = self.ctx.cspace_mgr.alloc(self.ctx.untyped_mgr)?;
+        self.ctx.untyped_mgr.alloc(CapType::Frame, 1, self.ctx.root_cnode, slot)?;
+        p.allocated_slots.push(slot);
+        Ok(slot)
     }
 
     fn free(&mut self, pid: Badge, cap: CapPtr) -> Result<(), Error> {
         log!("free: pid={}, cap={:?}", pid, cap);
-        let process = self.processes.get_mut(&pid).ok_or(Error::NotFound)?;
-        unimplemented!()
+        let p = self.processes.get_mut(&pid).ok_or(Error::NotFound)?;
+        let cnode = p.cnode;
+        cnode.delete(cap)?;
+        Ok(())
     }
 }
 
-impl InitResourceService for ProcessManager<'_> {
-    fn get_cap(&self, cap: InitCap) -> Result<CapPtr, Error> {
+impl<'a> InitResourceService for WarrenManager<'a> {
+    fn get_cap(&self, _pid: Badge, cap: InitCap) -> Result<CapPtr, Error> {
         log!("get_cap: cap={:?}", cap);
-        unimplemented!()
+        let cptr = match cap {
+            InitCap::Kernel => KERNEL_SLOT,
+            InitCap::Irq => IRQ_SLOT,
+            InitCap::Mmio => MMIO_SLOT,
+            InitCap::Untyped => UNTYPED_SLOT,
+        };
+        Ok(cptr)
     }
 
-    fn get_resource(&self, res: InitResource) -> Result<Box<dyn core::any::Any>, Error> {
-        log!("get_resource: res={:?}", res);
-        unimplemented!()
-    }
-
-    fn get_file(&self, name: &String) -> Result<glenda::cap::Frame, Error> {
+    fn get_file(&mut self, pid: Badge, name: &String) -> Result<Frame, Error> {
         log!("get_file: name={}", name);
-        unimplemented!()
+        let p = self.processes.get_mut(&pid).ok_or(Error::NotFound)?;
+        let file = self.initrd.get_file(name.as_str()).ok_or(Error::NotFound)?;
+        let len = file.len();
+        let pages = (len + PGSIZE - 1) / PGSIZE;
+        let slot = self.ctx.cspace_mgr.alloc(self.ctx.untyped_mgr)?;
+        self.ctx.untyped_mgr.alloc(CapType::Frame, pages, self.ctx.root_cnode, slot)?;
+        let frame = Frame::from(slot);
+        let scratch_vaddr = self.ctx.vspace_mgr.map_scratch(
+            frame,
+            Perms::READ | Perms::WRITE | Perms::USER,
+            pages,
+            self.ctx.untyped_mgr,
+            self.ctx.cspace_mgr,
+            self.ctx.root_cnode,
+        )?;
+        unsafe {
+            let dst = scratch_vaddr as *mut u8;
+            let src = file.as_ptr();
+            core::ptr::copy_nonoverlapping(src, dst, len);
+        }
+        self.ctx.vspace_mgr.unmap_scratch(scratch_vaddr, pages)?;
+        p.allocated_slots.push(slot);
+        Ok(frame)
     }
 }

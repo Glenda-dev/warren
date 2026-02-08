@@ -7,61 +7,59 @@ mod server;
 mod thread;
 
 pub use data::*;
+pub use resource::InitRes;
 pub use thread::TLS;
 
 use crate::layout::STACK_SIZE;
 use alloc::collections::BTreeMap;
 use alloc::string::ToString;
 use glenda::arch::mem::{KSTACK_PAGES, PGSIZE};
-use glenda::cap::{CNode, CapPtr, CapType, Endpoint, Frame, Reply, Rights, TCB, VSpace};
 use glenda::cap::{
-    CSPACE_SLOT, KERNEL_SLOT, MMIO_SLOT, MONITOR_SLOT, PLATFORM_SLOT, TCB_SLOT, VSPACE_SLOT,
+    BOOTINFO_SLOT, CSPACE_SLOT, IRQ_SLOT, KERNEL_SLOT, MMIO_SLOT, MONITOR_SLOT, TCB_SLOT,
+    UNTYPED_SLOT, VSPACE_SLOT,
 };
+use glenda::cap::{CNode, CapPtr, CapType, Endpoint, Frame, Reply, Rights, TCB, VSpace};
 use glenda::error::Error;
-use glenda::interface::ResourceService;
 use glenda::ipc::Badge;
 use glenda::mem::Perms;
 use glenda::mem::{ENTRY_VA, HEAP_PAGES, HEAP_SIZE, HEAP_VA, STACK_VA, TRAPFRAME_VA, UTCB_VA};
-use glenda::utils::BootInfo;
 use glenda::utils::initrd::Initrd;
-use glenda::utils::manager::{CSpaceManager, ResourceManager, VSpaceManager};
-use glenda::utils::manager::{CSpaceService, VSpaceService};
+use glenda::utils::manager::{CSpaceManager, UntypedManager, VSpaceManager};
+use glenda::utils::manager::{CSpaceService, UntypedService, VSpaceService};
 
 const SERVICE_PRIORITY: u8 = 252;
-
-pub struct InitResources {
-    pub boot_info: BootInfo,
-    pub untyped_cap: CapPtr,
-    pub mmio_cap: CapPtr,
-    pub irq_cap: CapPtr,
-}
 
 pub struct SystemContext<'a> {
     pub root_cnode: CNode,
     pub vspace_mgr: &'a mut VSpaceManager,
-    pub resource_mgr: &'a mut ResourceManager,
+    pub untyped_mgr: &'a mut UntypedManager,
     pub cspace_mgr: &'a mut CSpaceManager,
 }
 
-pub struct ProcessManager<'a> {
+pub struct WarrenManager<'a> {
     processes: BTreeMap<Badge, Process>,
     pid: Badge,
 
     // Communication
     endpoint: Endpoint,
     reply: Reply,
+
+    // Initrd
     initrd: Initrd<'a>,
+
+    // Init res
+    res: InitRes,
 
     // Context
     ctx: SystemContext<'a>,
     running: bool,
 }
 
-impl<'a> ProcessManager<'a> {
+impl<'a> WarrenManager<'a> {
     pub fn new(
         root_cnode: CNode,
         vspace_mgr: &'a mut VSpaceManager,
-        resource_mgr: &'a mut ResourceManager,
+        untyped_mgr: &'a mut UntypedManager,
         cspace_mgr: &'a mut CSpaceManager,
         initrd: Initrd<'a>,
     ) -> Self {
@@ -83,7 +81,14 @@ impl<'a> ProcessManager<'a> {
             endpoint: Endpoint::from(CapPtr::null()),
             reply: Reply::from(CapPtr::null()),
             initrd,
-            ctx: SystemContext { root_cnode, vspace_mgr, resource_mgr, cspace_mgr },
+            res: InitRes {
+                kernel_cap: KERNEL_SLOT,
+                irq_cap: IRQ_SLOT,
+                mmio_cap: MMIO_SLOT,
+                untyped_cap: UNTYPED_SLOT,
+                bootinfo_cap: BOOTINFO_SLOT,
+            },
+            ctx: SystemContext { root_cnode, vspace_mgr, untyped_mgr, cspace_mgr },
             running: false,
         }
     }
@@ -95,73 +100,36 @@ impl<'a> ProcessManager<'a> {
     fn create(&mut self, name: &str) -> Result<Process, Error> {
         let pid = self.alloc_pid()?;
 
-        let ep_slot = self.ctx.cspace_mgr.alloc(self.ctx.resource_mgr)?;
+        let ep_slot = self.ctx.cspace_mgr.alloc(self.ctx.untyped_mgr)?;
         self.ctx.root_cnode.mint(self.endpoint.cap(), ep_slot, pid, Rights::ALL)?;
         let child_endpoint = Endpoint::from(ep_slot);
 
-        let cnode_slot = self.ctx.cspace_mgr.alloc(self.ctx.resource_mgr)?;
-        self.ctx.resource_mgr.alloc(
-            Badge::null(),
-            CapType::CNode,
-            0,
-            self.ctx.root_cnode,
-            cnode_slot,
-        )?;
+        let cnode_slot = self.ctx.cspace_mgr.alloc(self.ctx.untyped_mgr)?;
+        self.ctx.untyped_mgr.alloc(CapType::CNode, 0, self.ctx.root_cnode, cnode_slot)?;
         let child_cnode = CNode::from(cnode_slot);
 
-        let pd_slot = self.ctx.cspace_mgr.alloc(self.ctx.resource_mgr)?;
-        self.ctx.resource_mgr.alloc(
-            Badge::null(),
-            CapType::VSpace,
-            0,
-            self.ctx.root_cnode,
-            pd_slot,
-        )?;
+        let pd_slot = self.ctx.cspace_mgr.alloc(self.ctx.untyped_mgr)?;
+        self.ctx.untyped_mgr.alloc(CapType::VSpace, 0, self.ctx.root_cnode, pd_slot)?;
         let child_pd = VSpace::from(pd_slot);
 
-        let tcb_slot = self.ctx.cspace_mgr.alloc(self.ctx.resource_mgr)?;
-        self.ctx.resource_mgr.alloc(
-            Badge::null(),
-            CapType::TCB,
-            0,
-            self.ctx.root_cnode,
-            tcb_slot,
-        )?;
+        let tcb_slot = self.ctx.cspace_mgr.alloc(self.ctx.untyped_mgr)?;
+        self.ctx.untyped_mgr.alloc(CapType::TCB, 0, self.ctx.root_cnode, tcb_slot)?;
         let child_tcb = TCB::from(tcb_slot);
 
-        let utcb_slot = self.ctx.cspace_mgr.alloc(self.ctx.resource_mgr)?;
-        self.ctx.resource_mgr.alloc(
-            Badge::null(),
-            CapType::Frame,
-            1,
-            self.ctx.root_cnode,
-            utcb_slot,
-        )?;
+        let utcb_slot = self.ctx.cspace_mgr.alloc(self.ctx.untyped_mgr)?;
+        self.ctx.untyped_mgr.alloc(CapType::Frame, 1, self.ctx.root_cnode, utcb_slot)?;
         let child_utcb = Frame::from(utcb_slot);
 
-        let trapframe_slot = self.ctx.cspace_mgr.alloc(self.ctx.resource_mgr)?;
-        self.ctx.resource_mgr.alloc(
-            Badge::null(),
-            CapType::Frame,
-            1,
-            self.ctx.root_cnode,
-            trapframe_slot,
-        )?;
+        let trapframe_slot = self.ctx.cspace_mgr.alloc(self.ctx.untyped_mgr)?;
+        self.ctx.untyped_mgr.alloc(CapType::Frame, 1, self.ctx.root_cnode, trapframe_slot)?;
         let child_trapframe = Frame::from(trapframe_slot);
 
-        let stack_slot = self.ctx.cspace_mgr.alloc(self.ctx.resource_mgr)?;
-        self.ctx.resource_mgr.alloc(
-            Badge::null(),
-            CapType::Frame,
-            1,
-            self.ctx.root_cnode,
-            stack_slot,
-        )?;
+        let stack_slot = self.ctx.cspace_mgr.alloc(self.ctx.untyped_mgr)?;
+        self.ctx.untyped_mgr.alloc(CapType::Frame, 1, self.ctx.root_cnode, stack_slot)?;
         let child_stack = Frame::from(stack_slot);
 
-        let kstack_slot = self.ctx.cspace_mgr.alloc(self.ctx.resource_mgr)?;
-        self.ctx.resource_mgr.alloc(
-            Badge::null(),
+        let kstack_slot = self.ctx.cspace_mgr.alloc(self.ctx.untyped_mgr)?;
+        self.ctx.untyped_mgr.alloc(
             CapType::Frame,
             KSTACK_PAGES,
             self.ctx.root_cnode,
@@ -169,22 +137,13 @@ impl<'a> ProcessManager<'a> {
         )?;
         let child_kstack = Frame::from(kstack_slot);
 
-        let heap_slot = self.ctx.cspace_mgr.alloc(self.ctx.resource_mgr)?;
-        self.ctx.resource_mgr.alloc(
-            Badge::null(),
-            CapType::Frame,
-            HEAP_PAGES,
-            self.ctx.root_cnode,
-            heap_slot,
-        )?;
+        let heap_slot = self.ctx.cspace_mgr.alloc(self.ctx.untyped_mgr)?;
+        self.ctx.untyped_mgr.alloc(CapType::Frame, HEAP_PAGES, self.ctx.root_cnode, heap_slot)?;
         let child_heap = Frame::from(heap_slot);
 
         child_cnode.copy(child_pd.cap(), VSPACE_SLOT, Rights::ALL)?;
         child_cnode.copy(child_cnode.cap(), CSPACE_SLOT, Rights::ALL)?;
         child_cnode.copy(child_tcb.cap(), TCB_SLOT, Rights::ALL)?;
-        child_cnode.copy(KERNEL_SLOT, KERNEL_SLOT, Rights::ALL)?;
-        child_cnode.copy(PLATFORM_SLOT, PLATFORM_SLOT, Rights::ALL)?;
-        child_cnode.copy(MMIO_SLOT, MMIO_SLOT, Rights::ALL)?;
         child_cnode.copy(child_endpoint.cap(), MONITOR_SLOT, Rights::ALL)?;
 
         // Child process vspace manager doesn't use scratch area from self, or we can give it one?
@@ -199,7 +158,7 @@ impl<'a> ProcessManager<'a> {
             UTCB_VA,
             Perms::READ | Perms::WRITE | Perms::USER,
             1,
-            self.ctx.resource_mgr,
+            self.ctx.untyped_mgr,
             self.ctx.cspace_mgr,
             self.ctx.root_cnode,
         )?;
@@ -208,7 +167,7 @@ impl<'a> ProcessManager<'a> {
             TRAPFRAME_VA,
             Perms::READ | Perms::WRITE,
             1,
-            self.ctx.resource_mgr,
+            self.ctx.untyped_mgr,
             self.ctx.cspace_mgr,
             self.ctx.root_cnode,
         )?;
@@ -217,7 +176,7 @@ impl<'a> ProcessManager<'a> {
             STACK_VA - PGSIZE,
             Perms::READ | Perms::WRITE | Perms::USER,
             1,
-            self.ctx.resource_mgr,
+            self.ctx.untyped_mgr,
             self.ctx.cspace_mgr,
             self.ctx.root_cnode,
         )?;
@@ -226,7 +185,7 @@ impl<'a> ProcessManager<'a> {
             HEAP_VA,
             Perms::READ | Perms::WRITE | Perms::USER,
             HEAP_PAGES,
-            self.ctx.resource_mgr,
+            self.ctx.untyped_mgr,
             self.ctx.cspace_mgr,
             self.ctx.root_cnode,
         )?;

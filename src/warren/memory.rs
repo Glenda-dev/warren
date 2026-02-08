@@ -1,14 +1,14 @@
-use super::ProcessManager;
+use super::WarrenManager;
 use crate::log;
 use glenda::arch::mem::PGSIZE;
 use glenda::cap::{CapType, Frame};
 use glenda::error::Error;
-use glenda::interface::{MemoryService, ResourceService};
+use glenda::interface::MemoryService;
 use glenda::ipc::Badge;
 use glenda::mem::Perms;
-use glenda::utils::manager::{CSpaceService, VSpaceService};
+use glenda::utils::manager::{CSpaceService, UntypedService, VSpaceService};
 
-impl<'a> MemoryService for ProcessManager<'a> {
+impl<'a> MemoryService for WarrenManager<'a> {
     fn brk(&mut self, pid: Badge, incr: isize) -> Result<usize, Error> {
         log!("brk: pid={}, incr={:#x}", pid, incr);
         let process = self.processes.get_mut(&pid).ok_or(Error::NotFound)?;
@@ -24,20 +24,14 @@ impl<'a> MemoryService for ProcessManager<'a> {
             let end_page = (new_brk + PGSIZE - 1) & !(PGSIZE - 1);
 
             for vaddr in (start_page..end_page).step_by(PGSIZE) {
-                let slot = self.ctx.cspace_mgr.alloc(self.ctx.resource_mgr)?;
-                self.ctx.resource_mgr.alloc(
-                    Badge::null(),
-                    CapType::Frame,
-                    1,
-                    self.ctx.root_cnode,
-                    slot,
-                )?;
+                let slot = self.ctx.cspace_mgr.alloc(self.ctx.untyped_mgr)?;
+                self.ctx.untyped_mgr.alloc(CapType::Frame, 1, self.ctx.root_cnode, slot)?;
                 process.vspace_mgr.map_frame(
                     Frame::from(slot),
                     vaddr,
                     Perms::READ | Perms::WRITE | Perms::USER,
                     1,
-                    self.ctx.resource_mgr,
+                    self.ctx.untyped_mgr,
                     self.ctx.cspace_mgr,
                     self.ctx.root_cnode,
                 )?;
@@ -58,20 +52,14 @@ impl<'a> MemoryService for ProcessManager<'a> {
         let end_page = (vaddr + len + PGSIZE - 1) & !(PGSIZE - 1);
 
         for v in (start_page..end_page).step_by(PGSIZE) {
-            let slot = self.ctx.cspace_mgr.alloc(self.ctx.resource_mgr)?;
-            self.ctx.resource_mgr.alloc(
-                Badge::null(),
-                CapType::Frame,
-                1,
-                self.ctx.root_cnode,
-                slot,
-            )?;
+            let slot = self.ctx.cspace_mgr.alloc(self.ctx.untyped_mgr)?;
+            self.ctx.untyped_mgr.alloc(CapType::Frame, 1, self.ctx.root_cnode, slot)?;
             process.vspace_mgr.map_frame(
                 Frame::from(slot),
                 v,
                 Perms::READ | Perms::WRITE | Perms::USER,
                 1,
-                self.ctx.resource_mgr,
+                self.ctx.untyped_mgr,
                 self.ctx.cspace_mgr,
                 self.ctx.root_cnode,
             )?;
@@ -88,8 +76,8 @@ impl<'a> MemoryService for ProcessManager<'a> {
         process.vspace_mgr.unmap(
             addr,
             (len + PGSIZE - 1) / PGSIZE,
-            self.ctx.resource_mgr, // Use Warren's resource manager to free slots
-            self.ctx.root_cnode,   // Process cnode where cap resides
+            self.ctx.untyped_mgr, // Use Warren's resource manager to free slots
+            self.ctx.root_cnode,  // Process cnode where cap resides
         )
     }
 }

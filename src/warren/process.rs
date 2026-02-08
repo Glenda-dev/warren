@@ -1,5 +1,5 @@
 use super::{Process, TLS};
-use super::{ProcessManager, ProcessState};
+use super::{ProcessState, WarrenManager};
 use crate::elf::ElfFile;
 use crate::elf::{PF_W, PF_X, PT_LOAD, PT_TLS};
 use crate::layout::SCRATCH_VA;
@@ -10,17 +10,17 @@ use glenda::arch::mem::{KSTACK_PAGES, PGSIZE};
 use glenda::cap::MONITOR_SLOT;
 use glenda::cap::{CNode, CapType, Frame, Rights, TCB, VSpace};
 use glenda::error::Error;
-use glenda::interface::{ProcessService, ResourceService};
+use glenda::interface::ProcessService;
 use glenda::ipc::Badge;
 use glenda::mem::Perms;
 use glenda::mem::{STACK_VA, TRAPFRAME_VA, UTCB_VA};
 use glenda::utils::align::align_up;
 use glenda::utils::manager::VSpaceManager;
-use glenda::utils::manager::{CSpaceService, VSpaceService};
+use glenda::utils::manager::{CSpaceService, UntypedService, VSpaceService};
 
 pub const SERVICE_PRIORITY: u8 = 128;
 
-impl<'a> ProcessService for ProcessManager<'a> {
+impl<'a> ProcessService for WarrenManager<'a> {
     fn spawn(&mut self, parent_pid: Badge, name: String) -> Result<usize, Error> {
         log!("Spawning process: {}, parent_pid: {}", name, parent_pid);
         let file = self.initrd.get_file(name.as_str()).ok_or(Error::NotFound)?.to_vec();
@@ -28,7 +28,7 @@ impl<'a> ProcessService for ProcessManager<'a> {
         process.parent_pid = parent_pid;
         let pid = process.pid;
         self.processes.insert(pid, process);
-        match self.load_image(pid, &file) {
+        match self.exec(pid, &file) {
             Ok((entry, _heap)) => {
                 let process = self.processes.get_mut(&pid).unwrap();
                 process.tcb.set_entrypoint(entry, STACK_VA, 0)?;
@@ -52,59 +52,28 @@ impl<'a> ProcessService for ProcessManager<'a> {
 
         let pid = self.alloc_pid()?;
 
-        let cnode_slot = self.ctx.cspace_mgr.alloc(self.ctx.resource_mgr)?;
-        self.ctx.resource_mgr.alloc(
-            Badge::null(),
-            CapType::CNode,
-            0,
-            self.ctx.root_cnode,
-            cnode_slot,
-        )?;
+        let cnode_slot = self.ctx.cspace_mgr.alloc(self.ctx.untyped_mgr)?;
+        self.ctx.untyped_mgr.alloc(CapType::CNode, 0, self.ctx.root_cnode, cnode_slot)?;
         let child_cnode = CNode::from(cnode_slot);
 
-        let pd_slot = self.ctx.cspace_mgr.alloc(self.ctx.resource_mgr)?;
-        self.ctx.resource_mgr.alloc(
-            Badge::null(),
-            CapType::VSpace,
-            0,
-            self.ctx.root_cnode,
-            pd_slot,
-        )?;
+        let pd_slot = self.ctx.cspace_mgr.alloc(self.ctx.untyped_mgr)?;
+        self.ctx.untyped_mgr.alloc(CapType::VSpace, 0, self.ctx.root_cnode, pd_slot)?;
         let child_pd = VSpace::from(pd_slot);
 
-        let tcb_slot = self.ctx.cspace_mgr.alloc(self.ctx.resource_mgr)?;
-        self.ctx.resource_mgr.alloc(
-            Badge::null(),
-            CapType::TCB,
-            0,
-            self.ctx.root_cnode,
-            tcb_slot,
-        )?;
+        let tcb_slot = self.ctx.cspace_mgr.alloc(self.ctx.untyped_mgr)?;
+        self.ctx.untyped_mgr.alloc(CapType::TCB, 0, self.ctx.root_cnode, tcb_slot)?;
         let child_tcb = TCB::from(tcb_slot);
 
-        let utcb_slot = self.ctx.cspace_mgr.alloc(self.ctx.resource_mgr)?;
-        self.ctx.resource_mgr.alloc(
-            Badge::null(),
-            CapType::Frame,
-            1,
-            self.ctx.root_cnode,
-            utcb_slot,
-        )?;
+        let utcb_slot = self.ctx.cspace_mgr.alloc(self.ctx.untyped_mgr)?;
+        self.ctx.untyped_mgr.alloc(CapType::Frame, 1, self.ctx.root_cnode, utcb_slot)?;
         let child_utcb = Frame::from(utcb_slot);
 
-        let trapframe_slot = self.ctx.cspace_mgr.alloc(self.ctx.resource_mgr)?;
-        self.ctx.resource_mgr.alloc(
-            Badge::null(),
-            CapType::Frame,
-            1,
-            self.ctx.root_cnode,
-            trapframe_slot,
-        )?;
+        let trapframe_slot = self.ctx.cspace_mgr.alloc(self.ctx.untyped_mgr)?;
+        self.ctx.untyped_mgr.alloc(CapType::Frame, 1, self.ctx.root_cnode, trapframe_slot)?;
         let child_trapframe = Frame::from(trapframe_slot);
 
-        let kstack_slot = self.ctx.cspace_mgr.alloc(self.ctx.resource_mgr)?;
-        self.ctx.resource_mgr.alloc(
-            Badge::null(),
+        let kstack_slot = self.ctx.cspace_mgr.alloc(self.ctx.untyped_mgr)?;
+        self.ctx.untyped_mgr.alloc(
             CapType::Frame,
             KSTACK_PAGES,
             self.ctx.root_cnode,
@@ -122,7 +91,7 @@ impl<'a> ProcessService for ProcessManager<'a> {
             .vspace_mgr
             .clone_space(
                 &mut child_vspace_mgr,
-                self.ctx.resource_mgr,
+                self.ctx.untyped_mgr,
                 self.ctx.cspace_mgr,
                 root_cnode,
                 SCRATCH_VA,
@@ -136,7 +105,7 @@ impl<'a> ProcessService for ProcessManager<'a> {
             UTCB_VA,
             Perms::READ | Perms::WRITE | Perms::USER,
             1,
-            self.ctx.resource_mgr,
+            self.ctx.untyped_mgr,
             self.ctx.cspace_mgr,
             root_cnode,
         )?;
@@ -145,7 +114,7 @@ impl<'a> ProcessService for ProcessManager<'a> {
             TRAPFRAME_VA,
             Perms::READ | Perms::WRITE,
             1,
-            self.ctx.resource_mgr,
+            self.ctx.untyped_mgr,
             self.ctx.cspace_mgr,
             root_cnode,
         )?;
@@ -190,7 +159,24 @@ impl<'a> ProcessService for ProcessManager<'a> {
         Ok(pid.bits())
     }
 
-    fn load_image(&mut self, pid: Badge, elf_data: &[u8]) -> Result<(usize, usize), Error> {
+    fn get_ppid(&mut self, pid: Badge) -> Result<usize, Error> {
+        log!("Get PPID: {}", pid);
+        let p = self.processes.get(&pid).ok_or(Error::NotFound)?;
+        let ppid = p.parent_pid;
+        Ok(ppid.bits())
+    }
+
+    fn get_cnode(&mut self, pid: Badge, target: Badge) -> Result<CNode, Error> {
+        log!("Get CNode: {}", pid);
+        let p = self.processes.get(&target).ok_or(Error::NotFound)?;
+        if p.parent_pid != pid {
+            return Err(Error::PermissionDenied);
+        }
+        let cnode = p.cnode;
+        Ok(cnode)
+    }
+
+    fn exec(&mut self, pid: Badge, elf_data: &[u8]) -> Result<(usize, usize), Error> {
         log!("Loading image for pid: {}, size: {}", pid, elf_data.len());
         let elf = ElfFile::new(elf_data).map_err(|_| Error::InvalidArgs)?;
         let mut max_vaddr = 0;
@@ -230,14 +216,8 @@ impl<'a> ProcessService for ProcessManager<'a> {
                     let end_page = (vaddr + mem_size + PGSIZE - 1) & !(PGSIZE - 1);
                     let num_pages = (end_page - start_page) / PGSIZE;
 
-                    let frame_cap = self.ctx.cspace_mgr.alloc(self.ctx.resource_mgr)?;
-                    self.ctx.resource_mgr.alloc(
-                        Badge::null(),
-                        CapType::Frame,
-                        num_pages,
-                        root_cnode,
-                        frame_cap,
-                    )?;
+                    let frame_cap = self.ctx.cspace_mgr.alloc(self.ctx.untyped_mgr)?;
+                    self.ctx.untyped_mgr.alloc(CapType::Frame, num_pages, root_cnode, frame_cap)?;
                     let frame = Frame::from(frame_cap);
 
                     process.vspace_mgr.map_frame(
@@ -245,11 +225,11 @@ impl<'a> ProcessService for ProcessManager<'a> {
                         start_page,
                         perms,
                         num_pages,
-                        self.ctx.resource_mgr,
+                        self.ctx.untyped_mgr,
                         self.ctx.cspace_mgr,
                         root_cnode,
                     )?;
-                    let scratch_slot = self.ctx.cspace_mgr.alloc(self.ctx.resource_mgr)?;
+                    let scratch_slot = self.ctx.cspace_mgr.alloc(self.ctx.untyped_mgr)?;
                     self.ctx.root_cnode.copy(frame_cap, scratch_slot, Rights::ALL)?;
                     let scratch_frame = Frame::from(scratch_slot);
 
@@ -257,7 +237,7 @@ impl<'a> ProcessService for ProcessManager<'a> {
                         scratch_frame,
                         Perms::READ | Perms::WRITE | Perms::USER,
                         num_pages,
-                        self.ctx.resource_mgr,
+                        self.ctx.untyped_mgr,
                         self.ctx.cspace_mgr,
                         root_cnode,
                     )?;
@@ -275,12 +255,7 @@ impl<'a> ProcessService for ProcessManager<'a> {
                         dest_slice[padding..padding + actual_copy]
                             .copy_from_slice(&elf_data[offset..offset + actual_copy]);
                     }
-                    self.ctx.vspace_mgr.unmap(
-                        scratch_vaddr,
-                        num_pages,
-                        self.ctx.resource_mgr,
-                        root_cnode,
-                    )?;
+                    self.ctx.vspace_mgr.unmap_scratch(scratch_vaddr, num_pages)?;
                 }
                 PT_TLS => {
                     _tls = Some(TLS {
