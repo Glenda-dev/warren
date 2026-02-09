@@ -2,8 +2,7 @@ use super::WarrenManager;
 use crate::layout::INIT_NAME;
 use crate::log;
 use alloc::string::ToString;
-use core::mem::transmute;
-use glenda::cap::{CapPtr, Endpoint, Reply};
+use glenda::cap::{CapPtr, CapType, Endpoint, Reply};
 use glenda::error::Error;
 use glenda::interface::{
     FaultService, InitResourceService, MemoryService, ProcessService, ResourceService,
@@ -88,7 +87,7 @@ impl<'a> SystemService for WarrenManager<'a> {
 
             (protocol::RESOURCE_PROTO, protocol::resource::ALLOC) => |s: &mut Self, u: &mut UTCB| {
                 handle_cap_call(u, |u| {
-                    let obj_type = unsafe { transmute(u.get_mr(0)) };
+                    let obj_type = CapType::from(u.get_mr(0));
                     let flags = u.get_mr(1);
                     let recv = CapPtr::from(u.get_mr(2));
                     s.alloc(u.get_badge(), obj_type, flags, recv)
@@ -109,15 +108,16 @@ impl<'a> SystemService for WarrenManager<'a> {
             (protocol::RESOURCE_PROTO, protocol::resource::GET_CAP) => |s: &mut Self, u: &mut UTCB| {
                  handle_cap_call(u, |u| {
                      let captype_num = u.get_mr(0);
-                     let captype = unsafe { transmute::<usize, InitCap>(captype_num) };
-                     s.get_cap(u.get_badge(), captype)
+                     let captype = InitCap::from(captype_num);
+                     s.get_cap(u.get_badge(), captype, CapPtr::null())
                  })
             },
-             (protocol::RESOURCE_PROTO, protocol::resource::GET_FILE) => |s: &mut Self, u: &mut UTCB| {
-                handle_cap_call(u, |u| {
+             (protocol::RESOURCE_PROTO, protocol::resource::MAP_FILE) => |s: &mut Self, u: &mut UTCB| {
+                handle_call(u, |u| {
                     let name = unsafe { u.read_str()? };
                     let name_owned = alloc::string::String::from(name);
-                    s.get_file(u.get_badge(), &name_owned).map(|frame| frame.cap())
+                    let address = u.get_mr(0);
+                    s.map_file(u.get_badge(), &name_owned, address)
                 })
             },
 

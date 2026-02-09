@@ -45,7 +45,7 @@ impl<'a> ResourceService for WarrenManager<'a> {
 }
 
 impl<'a> InitResourceService for WarrenManager<'a> {
-    fn get_cap(&self, _pid: Badge, cap: InitCap) -> Result<CapPtr, Error> {
+    fn get_cap(&self, _pid: Badge, cap: InitCap, _recv: CapPtr) -> Result<CapPtr, Error> {
         log!("get_cap: cap={:?}", cap);
         let cptr = match cap {
             InitCap::Kernel => KERNEL_SLOT,
@@ -59,8 +59,8 @@ impl<'a> InitResourceService for WarrenManager<'a> {
         Ok(cptr)
     }
 
-    fn get_file(&mut self, pid: Badge, name: &String) -> Result<Frame, Error> {
-        log!("get_file: name={}", name);
+    fn map_file(&mut self, pid: Badge, name: &String, address: usize) -> Result<usize, Error> {
+        log!("map_file: name={}", name);
         let p = self.processes.get_mut(&pid).ok_or(Error::NotFound)?;
         let file = self.initrd.get_file(name.as_str()).ok_or(Error::NotFound)?;
         let len = file.len();
@@ -68,21 +68,16 @@ impl<'a> InitResourceService for WarrenManager<'a> {
         let slot = self.ctx.cspace_mgr.alloc(self.ctx.untyped_mgr)?;
         self.ctx.untyped_mgr.alloc(CapType::Frame, pages, self.ctx.root_cnode, slot)?;
         let frame = Frame::from(slot);
-        let scratch_vaddr = self.ctx.vspace_mgr.map_scratch(
+        let perms = Perms::READ | Perms::USER;
+        p.vspace_mgr.map_frame(
             frame,
-            Perms::READ | Perms::WRITE | Perms::USER,
+            address,
+            perms,
             pages,
             self.ctx.untyped_mgr,
             self.ctx.cspace_mgr,
             self.ctx.root_cnode,
         )?;
-        unsafe {
-            let dst = scratch_vaddr as *mut u8;
-            let src = file.as_ptr();
-            core::ptr::copy_nonoverlapping(src, dst, len);
-        }
-        self.ctx.vspace_mgr.unmap_scratch(scratch_vaddr, pages)?;
-        p.allocated_slots.push(slot);
-        Ok(frame)
+        Ok(address)
     }
 }
