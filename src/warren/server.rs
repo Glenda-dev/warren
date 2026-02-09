@@ -107,7 +107,6 @@ impl<'a> SystemService for WarrenManager<'a> {
                  handle_cap_call(u, |u| {
                      let captype_num = u.get_mr(0);
                      let captype = unsafe { transmute::<usize, InitCap>(captype_num) };
-                     log!("Getting cap of type {} for badge {}", captype_num, u.get_badge());
                      s.get_cap(u.get_badge(), captype)
                  })
             },
