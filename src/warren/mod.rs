@@ -20,7 +20,7 @@ use glenda::cap::{
 };
 use glenda::cap::{CNode, CapPtr, CapType, Endpoint, Frame, Reply, Rights, TCB, VSpace};
 use glenda::error::Error;
-use glenda::ipc::Badge;
+use glenda::ipc::{Badge, IpcRouter};
 use glenda::mem::Perms;
 use glenda::mem::{ENTRY_VA, HEAP_PAGES, HEAP_SIZE, HEAP_VA, STACK_VA, TRAPFRAME_VA, UTCB_VA};
 use glenda::utils::initrd::Initrd;
@@ -53,6 +53,7 @@ pub struct WarrenManager<'a> {
     // Context
     ctx: SystemContext<'a>,
     running: bool,
+    router: IpcRouter<WarrenManager<'a>>,
 }
 
 impl<'a> WarrenManager<'a> {
@@ -90,6 +91,7 @@ impl<'a> WarrenManager<'a> {
             },
             ctx: SystemContext { root_cnode, vspace_mgr, untyped_mgr, cspace_mgr },
             running: false,
+            router: IpcRouter::new(),
         }
     }
     fn alloc_pid(&mut self) -> Result<Badge, Error> {
