@@ -45,6 +45,9 @@ impl<'a> SystemService for WarrenManager<'a> {
             match self.dispatch(&mut utcb) {
                 Ok(()) => {}
                 Err(e) => {
+                    if e == Error::Success {
+                        continue;
+                    }
                     log!("Failed to dispatch message: {:?}", e);
                     utcb.set_msg_tag(MsgTag::err());
                     utcb.set_mr(0, e as usize);
