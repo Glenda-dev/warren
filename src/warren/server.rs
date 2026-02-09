@@ -11,6 +11,7 @@ use glenda::interface::{
 };
 use glenda::ipc::{Badge, MsgFlags, MsgTag, UTCB};
 use glenda::protocol;
+use glenda::protocol::resource::InitCap;
 use glenda::set_mrs;
 
 impl<'a> SystemService for WarrenManager<'a> {
@@ -31,75 +32,42 @@ impl<'a> SystemService for WarrenManager<'a> {
         }
         self.running = true;
         while self.running {
-            match self.endpoint.recv(self.reply.cap()) {
+            let mut utcb = unsafe { UTCB::new() };
+            utcb.set_reply_window(self.reply.cap());
+            match self.endpoint.recv(&mut utcb) {
                 Ok(b) => b,
                 Err(e) => {
                     log!("Recv error: {:?}", e);
                     continue;
                 }
             };
-            let utcb = unsafe { UTCB::get() };
-            let info = utcb.msg_tag;
-            let badge = utcb.badge;
 
-            let res = self.dispatch(badge, info);
-            match res {
-                Ok(_) => {
-                    let tag = MsgTag::new(
-                        protocol::GENERIC_PROTO,
-                        protocol::generic::REPLY,
-                        MsgFlags::OK,
-                    );
-                    self.reply(tag)?
+            match self.dispatch(&mut utcb) {
+                Ok(()) => {}
+                Err(e) => {
+                    log!("Failed to dispatch message: {:?}", e);
+                    utcb.set_msg_tag(MsgTag::err());
+                    utcb.set_mr(0, e as usize);
                 }
-                Err(e) => match e {
-                    Error::Success => {
-                        continue;
-                    }
-                    Error::HasCap => {
-                        let tag = MsgTag::new(
-                            protocol::GENERIC_PROTO,
-                            protocol::generic::REPLY,
-                            MsgFlags::OK | MsgFlags::HAS_CAP,
-                        );
-                        self.reply(tag)?
-                    }
-                    Error::HasBuffer => {
-                        let tag = MsgTag::new(
-                            protocol::GENERIC_PROTO,
-                            protocol::generic::REPLY,
-                            MsgFlags::OK | MsgFlags::HAS_BUFFER,
-                        );
-                        self.reply(tag)?
-                    }
-                    _ => {
-                        let utcb = unsafe { UTCB::get() };
-                        set_mrs!(utcb, e);
-                        let tag = MsgTag::new(
-                            protocol::GENERIC_PROTO,
-                            protocol::generic::REPLY,
-                            MsgFlags::ERROR,
-                        );
-                        self.reply(tag)?
-                    }
-                },
-            }
+            };
+            self.reply(&mut utcb)?;
         }
         Ok(())
     }
-    fn dispatch(&mut self, badge: Badge, info: MsgTag) -> Result<(), Error> {
-        let label = info.label();
-        let proto = info.proto();
-        let flags = info.flags();
-        let utcb = unsafe { UTCB::get() };
-
+    fn dispatch(&mut self, utcb: &mut UTCB) -> Result<(), Error> {
+        let badge = utcb.get_badge();
+        let tag = utcb.get_msg_tag();
+        let label = tag.label();
+        let proto = tag.proto();
+        let flags = tag.flags();
+        let mrs = utcb.get_mrs();
         log!(
             "Received message: badge={}, label={:#x}, proto={:#x}, flags={}, utcb.mrs_regs={:?}",
             badge,
             label,
             proto,
             flags,
-            utcb.mrs_regs
+            mrs
         );
         match proto {
             protocol::PROCESS_PROTO => match label {
@@ -107,95 +75,109 @@ impl<'a> SystemService for WarrenManager<'a> {
                 protocol::process::FORK => {
                     let pid = self.fork(badge)?;
                     set_mrs!(utcb, pid);
+                    utcb.set_msg_tag(MsgTag::ok());
                     Ok(())
                 }
                 protocol::process::EXIT => {
-                    self.exit(badge, utcb.mrs_regs[0])?;
-                    Err(Error::Success)
+                    self.exit(badge, mrs[0])?;
+                    Ok(())
                 }
                 protocol::process::GET_CNODE => {
-                    let target = Badge::new(utcb.mrs_regs[0]);
-                    let cnode = self.get_cnode(badge, target)?;
-                    utcb.cap_transfer = cnode.cap();
-                    Err(Error::HasCap)
+                    let target = Badge::new(mrs[0]);
+                    let cnode = self.get_cnode(badge, target, CapPtr::null())?;
+                    utcb.set_cap_transfer(cnode.cap());
+                    utcb.set_msg_tag(MsgTag::new(
+                        protocol::GENERIC_PROTO,
+                        protocol::generic::REPLY,
+                        MsgFlags::OK | MsgFlags::HAS_CAP,
+                    ));
+                    Ok(())
                 }
                 _ => Err(Error::InvalidMethod),
             },
             protocol::RESOURCE_PROTO => match label {
                 protocol::resource::ALLOC => {
-                    let cap = self.alloc(
-                        badge,
-                        unsafe { transmute(utcb.mrs_regs[0]) },
-                        utcb.mrs_regs[1],
-                    )?;
-                    utcb.cap_transfer = cap;
-                    Err(Error::HasCap)
+                    let obj_type = unsafe { transmute(mrs[0]) };
+                    let flags = mrs[1];
+                    let recv = CapPtr::from(mrs[2]);
+                    let cap = self.alloc(badge, obj_type, flags, recv)?;
+                    utcb.set_cap_transfer(cap);
+                    utcb.set_msg_tag(MsgTag::new(
+                        protocol::GENERIC_PROTO,
+                        protocol::generic::REPLY,
+                        MsgFlags::OK | MsgFlags::HAS_CAP,
+                    ));
+                    Ok(())
                 }
                 protocol::resource::FREE => {
-                    let cap = CapPtr::from(utcb.mrs_regs[0]);
+                    let cap = CapPtr::from(mrs[0]);
                     self.free(badge, cap)?;
                     Ok(())
                 }
                 protocol::resource::SBRK => {
-                    let brk = self.brk(badge, utcb.mrs_regs[0] as isize)?;
+                    let brk = self.brk(badge, mrs[0] as isize)?;
                     set_mrs!(utcb, brk);
                     Ok(())
                 }
                 protocol::resource::MMAP => {
-                    let ret = self.mmap(badge, utcb.mrs_regs[0], utcb.mrs_regs[1])?;
+                    let ret = self.mmap(badge, mrs[0], mrs[1])?;
                     set_mrs!(utcb, ret);
                     Ok(())
                 }
                 protocol::resource::MUNMAP => {
-                    self.munmap(badge, utcb.mrs_regs[0], utcb.mrs_regs[1])?;
+                    self.munmap(badge, mrs[0], mrs[1])?;
                     Ok(())
                 }
                 protocol::resource::GET_CAP => {
-                    let cap = self.get_cap(badge, unsafe { transmute(utcb.mrs_regs[0]) })?;
-                    utcb.cap_transfer = cap;
-                    Err(Error::HasCap)
+                    let captype_num = mrs[0];
+                    let captype = unsafe { transmute::<usize, InitCap>(captype_num) };
+                    log!("Getting cap of type {} for badge {}", captype_num, badge);
+                    let cap = self.get_cap(badge, captype)?;
+                    utcb.set_cap_transfer(cap);
+                    utcb.set_msg_tag(MsgTag::new(
+                        protocol::GENERIC_PROTO,
+                        protocol::generic::REPLY,
+                        MsgFlags::OK | MsgFlags::HAS_CAP,
+                    ));
+                    Ok(())
                 }
                 protocol::resource::GET_FILE => {
-                    let name = utcb.read_str()?;
+                    let name = unsafe { utcb.read_str()? };
                     let frame = self.get_file(badge, &name)?;
-                    utcb.cap_transfer = frame.cap();
-                    Err(Error::HasCap)
+                    utcb.set_cap_transfer(frame.cap());
+                    utcb.set_msg_tag(MsgTag::new(
+                        protocol::GENERIC_PROTO,
+                        protocol::generic::REPLY,
+                        MsgFlags::OK | MsgFlags::HAS_CAP,
+                    ));
+                    Ok(())
                 }
                 _ => Err(Error::InvalidMethod),
             },
             protocol::KERNEL_PROTO => {
                 let res = match label {
-                    protocol::kernel::SYSCALL => self.syscall(badge, &utcb.mrs_regs),
-                    protocol::kernel::PAGE_FAULT => {
-                        self.page_fault(badge, utcb.mrs_regs[0], utcb.mrs_regs[1], utcb.mrs_regs[2])
-                    }
+                    protocol::kernel::SYSCALL => self.syscall(badge, utcb),
+                    protocol::kernel::PAGE_FAULT => self.page_fault(badge, mrs[0], mrs[1], mrs[2]),
                     protocol::kernel::ILLEGAL_INSTRUCTION => {
-                        self.illegal_instrution(badge, utcb.mrs_regs[0], utcb.mrs_regs[1])
+                        self.illegal_instrution(badge, mrs[0], mrs[1])
                     }
-                    protocol::kernel::BREAKPOINT => self.breakpoint(badge, utcb.mrs_regs[0]),
-                    protocol::kernel::ACCESS_FAULT => {
-                        self.access_fault(badge, utcb.mrs_regs[0], utcb.mrs_regs[1])
-                    }
+                    protocol::kernel::BREAKPOINT => self.breakpoint(badge, mrs[0]),
+                    protocol::kernel::ACCESS_FAULT => self.access_fault(badge, mrs[0], mrs[1]),
                     protocol::kernel::ACCESS_MISALIGNED => {
-                        self.access_misaligned(badge, utcb.mrs_regs[0], utcb.mrs_regs[1])
+                        self.access_misaligned(badge, mrs[0], mrs[1])
                     }
-                    _ => self.unknown_fault(
-                        badge,
-                        utcb.mrs_regs[0],
-                        utcb.mrs_regs[1],
-                        utcb.mrs_regs[2],
-                    ),
+                    _ => self.unknown_fault(badge, mrs[0], mrs[1], mrs[2]),
                 };
                 if let Err(e) = res {
                     log!("Failed to handle kernel protocol: {:?}", e);
                 }
-                return Err(Error::Success);
+                Ok(())
             }
             _ => Err(Error::InvalidProtocol),
         }
     }
-    fn reply(&mut self, info: MsgTag) -> Result<(), Error> {
-        self.reply.reply(info)
+    fn reply(&mut self, utcb: &mut UTCB) -> Result<(), Error> {
+        self.reply.reply(utcb)
     }
     fn stop(&mut self) {
         self.running = false;

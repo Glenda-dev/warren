@@ -4,7 +4,7 @@ use glenda::arch::mem::PGSIZE;
 use glenda::cap::{CapType, Frame};
 use glenda::error::Error;
 use glenda::interface::{FaultService, ProcessService};
-use glenda::ipc::{Badge, MsgArgs};
+use glenda::ipc::{Badge, UTCB};
 use glenda::mem::Perms;
 use glenda::mem::STACK_VA;
 use glenda::utils::align::align_down;
@@ -103,18 +103,18 @@ impl<'a> FaultService for WarrenManager<'a> {
         self.exit(pid, 0x04).map(|_| ())
     }
 
-    fn syscall(&mut self, pid: Badge, reg: &MsgArgs) -> Result<(), Error> {
+    fn syscall(&mut self, pid: Badge, utcb: &mut UTCB) -> Result<(), Error> {
         log!(
             "Non-Native Syscall: pid={}, regs=[{},{},{},{},{},{},{},{}]",
             pid,
-            reg[0],
-            reg[1],
-            reg[2],
-            reg[3],
-            reg[4],
-            reg[5],
-            reg[6],
-            reg[7]
+            utcb.get_mr(0),
+            utcb.get_mr(1),
+            utcb.get_mr(2),
+            utcb.get_mr(3),
+            utcb.get_mr(4),
+            utcb.get_mr(5),
+            utcb.get_mr(6),
+            utcb.get_mr(7)
         );
         self.exit(pid, usize::MAX).map(|_| ())
     }

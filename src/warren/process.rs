@@ -8,7 +8,7 @@ use alloc::string::String;
 use core::cmp::min;
 use glenda::arch::mem::{KSTACK_PAGES, PGSIZE};
 use glenda::cap::MONITOR_SLOT;
-use glenda::cap::{CNode, CapType, Frame, Rights, TCB, VSpace};
+use glenda::cap::{CNode, CapPtr, CapType, Frame, Rights, TCB, VSpace};
 use glenda::error::Error;
 use glenda::interface::ProcessService;
 use glenda::ipc::Badge;
@@ -166,7 +166,7 @@ impl<'a> ProcessService for WarrenManager<'a> {
         Ok(ppid.bits())
     }
 
-    fn get_cnode(&mut self, pid: Badge, target: Badge) -> Result<CNode, Error> {
+    fn get_cnode(&mut self, pid: Badge, target: Badge, _recv: CapPtr) -> Result<CNode, Error> {
         log!("Get CNode: {}", pid);
         let p = self.processes.get(&target).ok_or(Error::NotFound)?;
         if p.parent_pid != pid {

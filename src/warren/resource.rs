@@ -20,7 +20,13 @@ pub struct InitRes {
 }
 
 impl<'a> ResourceService for WarrenManager<'a> {
-    fn alloc(&mut self, pid: Badge, obj_type: CapType, flags: usize) -> Result<CapPtr, Error> {
+    fn alloc(
+        &mut self,
+        pid: Badge,
+        obj_type: CapType,
+        flags: usize,
+        _recv: CapPtr,
+    ) -> Result<CapPtr, Error> {
         log!("alloc: pid={}, type={:?}, flags={:#x}", pid, obj_type, flags);
         let p = self.processes.get_mut(&pid).ok_or(Error::NotFound)?;
         let slot = self.ctx.cspace_mgr.alloc(self.ctx.untyped_mgr)?;

@@ -22,7 +22,7 @@ use warren::WarrenManager;
 #[macro_export]
 macro_rules! log {
     ($($arg:tt)*) => ({
-        glenda::println!("Warren: {}", format_args!($($arg)*));
+        glenda::println!("{}Warren: {}{}", glenda::console::ANSI_BLUE, format_args!($($arg)*), glenda::console::ANSI_RESET);
     })
 }
 
