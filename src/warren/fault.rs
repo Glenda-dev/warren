@@ -23,7 +23,7 @@ impl<'a> FaultService for WarrenManager<'a> {
         // Only handle stack growth
         if addr < STACK_VA - MAX_STACK_SIZE || addr >= STACK_VA {
             log!(
-                "PageFault outside stack: pid={}, address={:#x}, pc={:#x}, cause={:#x}",
+                "PageFault outside stack: pid: {:?}, address={:#x}, pc={:#x}, cause={:#x}",
                 pid,
                 addr,
                 pc,
@@ -35,7 +35,7 @@ impl<'a> FaultService for WarrenManager<'a> {
         let process = self.processes.get_mut(&pid).ok_or(Error::NotFound)?;
 
         log!(
-            "PageFault (Stack): pid={}, address={:#x}, pc={:#x}, cause={:#x}",
+            "PageFault (Stack): pid: {:?}, address={:#x}, pc={:#x}, cause={:#x}",
             pid,
             addr,
             pc,
@@ -76,7 +76,7 @@ impl<'a> FaultService for WarrenManager<'a> {
         pc: usize,
     ) -> Result<(), Error> {
         log!(
-            "Unhandled fault: pid={}, cause={:#x}, value={:#x}, pc={:#x}. Killing process.\n",
+            "Unhandled fault: pid: {:?}, cause={:#x}, value={:#x}, pc={:#x}. Killing process.\n",
             pid,
             cause,
             value,
@@ -85,27 +85,27 @@ impl<'a> FaultService for WarrenManager<'a> {
         self.exit(pid, usize::MAX).map(|_| ())
     }
     fn access_fault(&mut self, pid: Badge, addr: usize, pc: usize) -> Result<(), Error> {
-        log!("Access Fault: pid={}, addr={:#x}, pc={:#x}", pid, addr, pc);
+        log!("Access Fault: pid: {:?}, addr={:#x}, pc={:#x}", pid, addr, pc);
         self.exit(pid, 0x0b).map(|_| ())
     }
     fn access_misaligned(&mut self, pid: Badge, addr: usize, pc: usize) -> Result<(), Error> {
-        log!("Misaligned Access: pid={}, addr={:#x}, pc={:#x}", pid, addr, pc);
+        log!("Misaligned Access: pid: {:?}, addr={:#x}, pc={:#x}", pid, addr, pc);
         self.exit(pid, 0x0b).map(|_| ())
     }
     fn breakpoint(&mut self, pid: Badge, pc: usize) -> Result<(), Error> {
-        log!("Breakpoint: pid={}, pc={:#x}", pid, pc);
+        log!("Breakpoint: pid: {:?}, pc={:#x}", pid, pc);
         // Maybe resume or handled by debugger service
         self.exit(pid, 0x05).map(|_| ())
     }
 
     fn illegal_instrution(&mut self, pid: Badge, inst: usize, pc: usize) -> Result<(), Error> {
-        log!("Illegal Instruction: pid={}, inst={:#x}, pc={:#x}", pid, inst, pc);
+        log!("Illegal Instruction: pid: {:?}, inst={:#x}, pc={:#x}", pid, inst, pc);
         self.exit(pid, 0x04).map(|_| ())
     }
 
     fn syscall(&mut self, pid: Badge, utcb: &mut UTCB) -> Result<(), Error> {
         log!(
-            "Non-Native Syscall: pid={}, regs=[{},{},{},{},{},{},{},{}]",
+            "Non-Native Syscall: pid: {:?}, regs=[{},{},{},{},{},{},{},{}]",
             pid,
             utcb.get_mr(0),
             utcb.get_mr(1),

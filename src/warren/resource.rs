@@ -1,6 +1,5 @@
 use crate::WarrenManager;
 use crate::log;
-use alloc::string::String;
 use glenda::arch::mem::PGSIZE;
 use glenda::cap::{CapPtr, CapType, Frame};
 use glenda::cap::{IRQ_SLOT, KERNEL_SLOT, MMIO_SLOT, UNTYPED_SLOT};
@@ -9,6 +8,7 @@ use glenda::interface::{InitResourceService, ResourceService};
 use glenda::ipc::Badge;
 use glenda::mem::Perms;
 use glenda::protocol::resource::InitCap;
+use glenda::utils::align::align_up;
 use glenda::utils::manager::{CSpaceService, UntypedService, VSpaceService};
 
 pub struct InitRes {
@@ -27,7 +27,7 @@ impl<'a> ResourceService for WarrenManager<'a> {
         flags: usize,
         _recv: CapPtr,
     ) -> Result<CapPtr, Error> {
-        log!("alloc: pid={}, type={:?}, flags={:#x}", pid, obj_type, flags);
+        log!("alloc: pid: {:?}, type={:?}, flags={:#x}", pid, obj_type, flags);
         let p = self.processes.get_mut(&pid).ok_or(Error::NotFound)?;
         let slot = self.ctx.cspace_mgr.alloc(self.ctx.untyped_mgr)?;
         self.ctx.untyped_mgr.alloc(CapType::Frame, 1, self.ctx.root_cnode, slot)?;
@@ -36,7 +36,7 @@ impl<'a> ResourceService for WarrenManager<'a> {
     }
 
     fn free(&mut self, pid: Badge, cap: CapPtr) -> Result<(), Error> {
-        log!("free: pid={}, cap={:?}", pid, cap);
+        log!("free: pid: {:?}, cap={:?}", pid, cap);
         let p = self.processes.get_mut(&pid).ok_or(Error::NotFound)?;
         let cnode = p.cnode;
         cnode.delete(cap)?;
@@ -59,25 +59,28 @@ impl<'a> InitResourceService for WarrenManager<'a> {
         Ok(cptr)
     }
 
-    fn map_file(&mut self, pid: Badge, name: &String, address: usize) -> Result<usize, Error> {
-        log!("map_file: name={}", name);
-        let p = self.processes.get_mut(&pid).ok_or(Error::NotFound)?;
-        let file = self.initrd.get_file(name.as_str()).ok_or(Error::NotFound)?;
+    fn get_file(&mut self, pid: Badge, name: &str, _recv: CapPtr) -> Result<(Frame, usize), Error> {
+        log!("get_file: name={}", name);
+        let _p = self.processes.get_mut(&pid).ok_or(Error::NotFound)?;
+        let file = self.initrd.get_file(name).ok_or(Error::NotFound)?;
         let len = file.len();
-        let pages = (len + PGSIZE - 1) / PGSIZE;
+        let pages = align_up(len, PGSIZE) / PGSIZE;
         let slot = self.ctx.cspace_mgr.alloc(self.ctx.untyped_mgr)?;
         self.ctx.untyped_mgr.alloc(CapType::Frame, pages, self.ctx.root_cnode, slot)?;
         let frame = Frame::from(slot);
-        let perms = Perms::READ | Perms::USER;
-        p.vspace_mgr.map_frame(
+        let vaddr = self.ctx.vspace_mgr.map_scratch(
             frame,
-            address,
-            perms,
+            Perms::READ | Perms::WRITE | Perms::USER,
             pages,
             self.ctx.untyped_mgr,
             self.ctx.cspace_mgr,
             self.ctx.root_cnode,
         )?;
-        Ok(address)
+        unsafe {
+            let dst = core::slice::from_raw_parts_mut(vaddr as *mut u8, len);
+            dst[..len].copy_from_slice(file);
+        }
+        self.ctx.vspace_mgr.unmap_scratch(vaddr, pages)?;
+        Ok((frame, len))
     }
 }

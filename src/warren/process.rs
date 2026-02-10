@@ -4,7 +4,6 @@ use crate::elf::ElfFile;
 use crate::elf::{PF_W, PF_X, PT_LOAD, PT_TLS};
 use crate::layout::SCRATCH_VA;
 use crate::log;
-use alloc::string::String;
 use core::cmp::min;
 use glenda::arch::mem::{KSTACK_PAGES, PGSIZE};
 use glenda::cap::MONITOR_SLOT;
@@ -21,10 +20,10 @@ use glenda::utils::manager::{CSpaceService, UntypedService, VSpaceService};
 pub const SERVICE_PRIORITY: u8 = 128;
 
 impl<'a> ProcessService for WarrenManager<'a> {
-    fn spawn(&mut self, parent_pid: Badge, name: String) -> Result<usize, Error> {
-        log!("Spawning process: {}, parent_pid: {}", name, parent_pid);
-        let file = self.initrd.get_file(name.as_str()).ok_or(Error::NotFound)?.to_vec();
-        let mut process = self.create(name.as_str())?;
+    fn spawn(&mut self, parent_pid: Badge, name: &str) -> Result<usize, Error> {
+        log!("Spawning process: {}, parent_pid: {:?}", name, parent_pid);
+        let file = self.initrd.get_file(name).ok_or(Error::NotFound)?.to_vec();
+        let mut process = self.create(name)?;
         process.parent_pid = parent_pid;
         let pid = process.pid;
         self.processes.insert(pid, process);
@@ -44,7 +43,7 @@ impl<'a> ProcessService for WarrenManager<'a> {
     }
 
     fn fork(&mut self, parent_pid: Badge) -> Result<usize, Error> {
-        log!("Forking process, parent_pid: {}", parent_pid);
+        log!("Forking process, parent_pid: {:?}", parent_pid);
         let (heap_start, heap_brk, name, stack_base, stack_pages) = {
             let p = self.processes.get(&parent_pid).ok_or(Error::NotFound)?;
             (p.heap_start, p.heap_brk, p.name.clone(), p.stack_base, p.stack_pages)
@@ -138,7 +137,7 @@ impl<'a> ProcessService for WarrenManager<'a> {
         process.stack_pages = stack_pages;
 
         self.processes.insert(pid, process);
-        log!("Process forked: parent_pid: {}, child_pid: {}", parent_pid, pid);
+        log!("Process forked: parent_pid: {:?}, child_pid: {:?}", parent_pid, pid);
         Ok(pid.bits())
     }
 
@@ -147,20 +146,20 @@ impl<'a> ProcessService for WarrenManager<'a> {
             p.exit_code = code;
             p.state = ProcessState::Dead;
             p.tcb.suspend()?;
-            log!("Process exited with pid: {}, code={}", pid, code);
+            log!("Process exited with pid: {:?}, code={}", pid, code);
         } else {
-            log!("Failed to find process with pid: {}", pid);
+            log!("Failed to find process with pid: {:?}", pid);
         }
         Err(Error::Success)
     }
 
     fn get_pid(&mut self, pid: Badge) -> Result<usize, Error> {
-        log!("Get PID: {}", pid);
+        log!("Get pid: {:?}", pid);
         Ok(pid.bits())
     }
 
     fn get_ppid(&mut self, pid: Badge) -> Result<usize, Error> {
-        log!("Get PPID: {}", pid);
+        log!("Get Ppid: {:?}", pid);
         let p = self.processes.get(&pid).ok_or(Error::NotFound)?;
         let ppid = p.parent_pid;
         Ok(ppid.bits())
@@ -177,7 +176,7 @@ impl<'a> ProcessService for WarrenManager<'a> {
     }
 
     fn exec(&mut self, pid: Badge, elf_data: &[u8]) -> Result<(usize, usize), Error> {
-        log!("Loading image for pid: {}, size: {}", pid, elf_data.len());
+        log!("Loading image for pid: {:?}, size: {} KB", pid, elf_data.len() / 1024);
         let elf = ElfFile::new(elf_data).map_err(|_| Error::InvalidArgs)?;
         let mut max_vaddr = 0;
         let process = self.processes.get_mut(&pid).ok_or(Error::NotFound)?;
@@ -277,5 +276,9 @@ impl<'a> ProcessService for WarrenManager<'a> {
         let heap = align_up(max_vaddr, PGSIZE);
         log!("Image loaded with entry_point: {:#x}, heap: {:#x}", ep, heap);
         Ok((ep, heap))
+    }
+
+    fn kill(&mut self, _pid: Badge, _target: usize) -> Result<(), Error> {
+        Err(Error::NotImplemented)
     }
 }

@@ -6,11 +6,12 @@ use glenda::error::Error;
 use glenda::interface::MemoryService;
 use glenda::ipc::Badge;
 use glenda::mem::Perms;
+use glenda::utils::align::align_up;
 use glenda::utils::manager::{CSpaceService, UntypedService, VSpaceService};
 
 impl<'a> MemoryService for WarrenManager<'a> {
     fn brk(&mut self, pid: Badge, incr: isize) -> Result<usize, Error> {
-        log!("brk: pid={}, incr={:#x}", pid, incr);
+        log!("brk: pid: {:?}, incr={:#x}", pid, incr);
         let process = self.processes.get_mut(&pid).ok_or(Error::NotFound)?;
         let old_brk = process.heap_brk;
         let new_brk = (old_brk as isize + incr) as usize;
@@ -42,33 +43,25 @@ impl<'a> MemoryService for WarrenManager<'a> {
         Ok(new_brk)
     }
 
-    fn mmap(&mut self, pid: Badge, addr: usize, len: usize) -> Result<usize, Error> {
-        log!("mmap: pid={}, addr={:#x}, len={:#x}", pid, addr, len);
+    fn mmap(&mut self, pid: Badge, frame: Frame, addr: usize, len: usize) -> Result<usize, Error> {
+        log!("mmap: pid: {:?}, frame={:?}, addr={:#x}, len={:#x}", pid, frame, addr, len);
         let process = self.processes.get_mut(&pid).ok_or(Error::NotFound)?;
-
-        let vaddr = addr;
-
-        let start_page = vaddr & !(PGSIZE - 1);
-        let end_page = (vaddr + len + PGSIZE - 1) & !(PGSIZE - 1);
-
-        for v in (start_page..end_page).step_by(PGSIZE) {
-            let slot = self.ctx.cspace_mgr.alloc(self.ctx.untyped_mgr)?;
-            self.ctx.untyped_mgr.alloc(CapType::Frame, 1, self.ctx.root_cnode, slot)?;
-            process.vspace_mgr.map_frame(
-                Frame::from(slot),
-                v,
-                Perms::READ | Perms::WRITE | Perms::USER,
-                1,
-                self.ctx.untyped_mgr,
-                self.ctx.cspace_mgr,
-                self.ctx.root_cnode,
-            )?;
-        }
-        Ok(vaddr)
+        // Use Warren's root CNode for managing intermediate page tables
+        let cspace = self.ctx.root_cnode;
+        process.vspace_mgr.map_frame(
+            frame,
+            addr,
+            Perms::READ | Perms::WRITE | Perms::USER,
+            align_up(len, PGSIZE) / PGSIZE,
+            self.ctx.untyped_mgr,
+            self.ctx.cspace_mgr,
+            cspace,
+        )?;
+        Ok(addr)
     }
 
     fn munmap(&mut self, pid: Badge, addr: usize, len: usize) -> Result<(), Error> {
-        log!("munmap: pid={}, addr={:#x}, len={:#x}", pid, addr, len);
+        log!("munmap: pid: {:?}, addr={:#x}, len={:#x}", pid, addr, len);
         if addr % PGSIZE != 0 {
             return Err(Error::InvalidArgs);
         }

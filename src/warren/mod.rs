@@ -11,7 +11,7 @@ pub use resource::InitRes;
 pub use thread::TLS;
 
 use crate::layout::STACK_SIZE;
-use alloc::collections::BTreeMap;
+use alloc::collections::{BTreeMap, VecDeque};
 use alloc::string::ToString;
 use glenda::arch::mem::{KSTACK_PAGES, PGSIZE};
 use glenda::cap::{
@@ -43,6 +43,9 @@ pub struct WarrenManager<'a> {
     // Communication
     endpoint: Endpoint,
     reply: Reply,
+
+    // Sync
+    wait_queues: BTreeMap<(Badge, usize), VecDeque<CapPtr>>,
 
     // Initrd
     initrd: Initrd<'a>,
@@ -81,6 +84,7 @@ impl<'a> WarrenManager<'a> {
             pid: Badge::null(),
             endpoint: Endpoint::from(CapPtr::null()),
             reply: Reply::from(CapPtr::null()),
+            wait_queues: BTreeMap::new(),
             initrd,
             res: InitRes {
                 kernel_cap: KERNEL_SLOT,
@@ -95,7 +99,7 @@ impl<'a> WarrenManager<'a> {
         }
     }
     fn alloc_pid(&mut self) -> Result<Badge, Error> {
-        let next = self.pid.bits().checked_add(1).ok_or(Error::OutOfSlots)?;
+        let next = self.pid.bits().checked_add(1).ok_or(Error::CNodeFull)?;
         self.pid = Badge::new(next);
         Ok(self.pid)
     }

@@ -1,23 +1,23 @@
 use super::WarrenManager;
 use crate::layout::INIT_NAME;
 use crate::log;
-use alloc::string::ToString;
-use glenda::cap::{CapPtr, CapType, Endpoint, Reply};
+use glenda::cap::RECV_SLOT;
+use glenda::cap::{CapPtr, CapType, Endpoint, Frame, Reply};
 use glenda::error::Error;
 use glenda::interface::{
     FaultService, InitResourceService, MemoryService, ProcessService, ResourceService,
     SystemService,
 };
 use glenda::ipc::server::{handle_call, handle_cap_call};
-use glenda::ipc::{Badge, MsgTag, UTCB};
+use glenda::ipc::{Badge, MsgFlags, MsgTag, UTCB};
 use glenda::protocol;
 use glenda::protocol::resource::InitCap;
 
 impl<'a> SystemService for WarrenManager<'a> {
     fn init(&mut self) -> Result<(), Error> {
         // Use trait interface to spawn
-        self.spawn(Badge::null(), INIT_NAME.to_string()).map(|pid| {
-            log!("Started init {} with PID: {}", INIT_NAME, pid);
+        self.spawn(Badge::null(), INIT_NAME).map(|pid| {
+            log!("Started init {} with pid: {:?}", INIT_NAME, pid);
         })
     }
     fn listen(&mut self, ep: Endpoint, reply: CapPtr) -> Result<(), Error> {
@@ -32,7 +32,9 @@ impl<'a> SystemService for WarrenManager<'a> {
         self.running = true;
         while self.running {
             let mut utcb = unsafe { UTCB::new() };
+            utcb.clear();
             utcb.set_reply_window(self.reply.cap());
+            utcb.set_recv_window(RECV_SLOT);
             match self.endpoint.recv(&mut utcb) {
                 Ok(b) => b,
                 Err(e) => {
@@ -63,26 +65,35 @@ impl<'a> SystemService for WarrenManager<'a> {
         let proto = tag.proto();
         let flags = tag.flags();
         let mrs = utcb.get_mrs();
+        let size = utcb.get_size();
         log!(
-            "Received message: badge={}, label={:#x}, proto={:#x}, flags={}, utcb.mrs_regs={:?}",
+            "Received message: badge={}, label={:#x}, proto={:#x}, flags={}, utcb.mrs_regs={:?}, size={}",
             badge,
             label,
             proto,
             flags,
-            mrs
+            mrs,
+            size
         );
 
         glenda::ipc_dispatch! {
             self, utcb,
-            (protocol::PROCESS_PROTO, protocol::process::SPAWN) => |_, _| Err(Error::NotImplemented),
+            (protocol::PROCESS_PROTO, protocol::process::SPAWN) => |s: &mut Self, u: &mut UTCB| {
+                let name = unsafe {u.read_str()?};
+                handle_call(u, |_| s.spawn(badge, &name))
+            },
             (protocol::PROCESS_PROTO, protocol::process::FORK) => |s: &mut Self, u: &mut UTCB| {
-                handle_call(u, |u| s.fork(u.get_badge()))
+                handle_call(u, |_| s.fork(badge))
             },
             (protocol::PROCESS_PROTO, protocol::process::EXIT) => |s: &mut Self, u: &mut UTCB| {
-                handle_call(u, |u| s.exit(u.get_badge(), u.get_mr(0)))
+                handle_call(u, |u| s.exit(badge, u.get_mr(0)))
+            },
+            (protocol::PROCESS_PROTO, protocol::process::EXEC) => |s: &mut Self, u: &mut UTCB| {
+                    let elf_data = unsafe { core::slice::from_raw_parts(u.get_mr(0) as *const u8, u.get_mr(1)) };
+                    handle_call(u, |_| s.exec(badge, elf_data))
             },
             (protocol::PROCESS_PROTO, protocol::process::GET_CNODE) => |s: &mut Self, u: &mut UTCB| {
-                handle_cap_call(u, |u| s.get_cnode(u.get_badge(), Badge::new(u.get_mr(0)), CapPtr::null()).map(|c| c.cap()))
+                handle_cap_call(u, |u| s.get_cnode(badge, Badge::new(u.get_mr(0)), CapPtr::null()).map(|c| c.cap()))
             },
 
             (protocol::RESOURCE_PROTO, protocol::resource::ALLOC) => |s: &mut Self, u: &mut UTCB| {
@@ -90,42 +101,46 @@ impl<'a> SystemService for WarrenManager<'a> {
                     let obj_type = CapType::from(u.get_mr(0));
                     let flags = u.get_mr(1);
                     let recv = CapPtr::from(u.get_mr(2));
-                    s.alloc(u.get_badge(), obj_type, flags, recv)
+                    s.alloc(badge, obj_type, flags, recv)
                 })
             },
             (protocol::RESOURCE_PROTO, protocol::resource::FREE) => |s: &mut Self, u: &mut UTCB| {
-                handle_call(u, |u| s.free(u.get_badge(), CapPtr::from(u.get_mr(0))))
+                handle_call(u, |u| s.free(badge, CapPtr::from(u.get_mr(0))))
             },
             (protocol::RESOURCE_PROTO, protocol::resource::SBRK) => |s: &mut Self, u: &mut UTCB| {
-                handle_call(u, |u| s.brk(u.get_badge(), u.get_mr(0) as isize))
+                handle_call(u, |u| s.brk(badge, u.get_mr(0) as isize))
             },
             (protocol::RESOURCE_PROTO, protocol::resource::MMAP) => |s: &mut Self, u: &mut UTCB| {
-                handle_call(u, |u| s.mmap(u.get_badge(), u.get_mr(0), u.get_mr(1)))
+                handle_call(u, |u| {
+                    let frame = if u.get_msg_tag().flags().contains(MsgFlags::HAS_CAP) {
+                        Frame::from(RECV_SLOT)
+                    } else {
+                        Frame::from(CapPtr::from(u.get_mr(0)))
+                    };
+                    let addr = u.get_mr(1);
+                    let len = u.get_mr(2);
+                    s.mmap(badge, frame, addr, len)
+                })
             },
             (protocol::RESOURCE_PROTO, protocol::resource::MUNMAP) => |s: &mut Self, u: &mut UTCB| {
-                handle_call(u, |u| s.munmap(u.get_badge(), u.get_mr(0), u.get_mr(1)))
+                handle_call(u, |u| s.munmap(badge, u.get_mr(0), u.get_mr(1)))
             },
             (protocol::RESOURCE_PROTO, protocol::resource::GET_CAP) => |s: &mut Self, u: &mut UTCB| {
                  handle_cap_call(u, |u| {
                      let captype_num = u.get_mr(0);
                      let captype = InitCap::from(captype_num);
-                     s.get_cap(u.get_badge(), captype, CapPtr::null())
+                     s.get_cap(badge, captype, CapPtr::null())
                  })
             },
-             (protocol::RESOURCE_PROTO, protocol::resource::MAP_FILE) => |s: &mut Self, u: &mut UTCB| {
-                handle_call(u, |u| {
-                    let name = unsafe { u.read_str()? };
-                    let name_owned = alloc::string::String::from(name);
-                    let address = u.get_mr(0);
-                    s.map_file(u.get_badge(), &name_owned, address)
+            (protocol::RESOURCE_PROTO, protocol::resource::GET_FILE) => |s: &mut Self, u: &mut UTCB| {
+                handle_cap_call(u, |u| {
+                    let name = unsafe {u.read_str()?};
+                    let (frame, len) = s.get_file(badge, &name, CapPtr::null())?;
+                    u.set_mr(0, len);
+                    Ok(frame.cap())
                 })
             },
-
             (protocol::KERNEL_PROTO, _) => |s: &mut Self, u: &mut UTCB| {
-                let badge = u.get_badge();
-                let mrs = u.get_mrs();
-                let label = u.get_msg_tag().label();
-
                 let res = match label {
                     protocol::kernel::SYSCALL => s.syscall(badge, u),
                     protocol::kernel::PAGE_FAULT => s.page_fault(badge, mrs[0], mrs[1], mrs[2]),
