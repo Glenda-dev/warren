@@ -100,7 +100,7 @@ impl<'a> SystemService for WarrenManager<'a> {
                 handle_cap_call(u, |u| {
                     let obj_type = CapType::from(u.get_mr(0));
                     let flags = u.get_mr(1);
-                    let recv = CapPtr::from(u.get_mr(2));
+                    let recv = CapPtr::null();
                     s.alloc(badge, obj_type, flags, recv)
                 })
             },

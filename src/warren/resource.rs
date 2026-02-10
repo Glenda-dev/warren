@@ -30,7 +30,7 @@ impl<'a> ResourceService for WarrenManager<'a> {
         log!("alloc: pid: {:?}, type={:?}, flags={:#x}", pid, obj_type, flags);
         let p = self.processes.get_mut(&pid).ok_or(Error::NotFound)?;
         let slot = self.ctx.cspace_mgr.alloc(self.ctx.untyped_mgr)?;
-        self.ctx.untyped_mgr.alloc(CapType::Frame, 1, self.ctx.root_cnode, slot)?;
+        self.ctx.untyped_mgr.alloc(obj_type, flags, self.ctx.root_cnode, slot)?;
         p.allocated_slots.push(slot);
         Ok(slot)
     }
