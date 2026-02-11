@@ -55,8 +55,8 @@ fn main() -> usize {
     let mut cspace_mgr = CSpaceManager::new(CSPACE_CAP, 16);
 
     // Allocated caps
-    if let Err(e) = untyped_mgr.alloc(CapType::Endpoint, 0, CSPACE_CAP, MONITOR_SLOT) {
-        log!("Failed to create endpoint: {:?}", e);
+    if untyped_mgr.alloc(CapType::Endpoint, 0, CSPACE_CAP, MONITOR_SLOT).is_err() {
+        log!("Failed to create endpoint");
         return 1;
     }
 

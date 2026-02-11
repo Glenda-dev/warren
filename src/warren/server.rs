@@ -99,12 +99,16 @@ impl<'a> SystemService for WarrenManager<'a> {
             },
 
             (protocol::RESOURCE_PROTO, protocol::resource::ALLOC) => |s: &mut Self, u: &mut UTCB| {
-                handle_cap_call(u, |u| {
-                    let obj_type = CapType::from(u.get_mr(0));
-                    let flags = u.get_mr(1);
-                    let recv = CapPtr::null();
-                    s.alloc(badge, obj_type, flags, recv)
-                })
+                handle_cap_call(u, |u| s.alloc(badge, CapType::from(u.get_mr(0)), u.get_mr(1), CapPtr::null())
+                )
+            },
+            (protocol::RESOURCE_PROTO, protocol::resource::DMA_ALLOC) => |s: &mut Self, u: &mut UTCB| {
+                handle_cap_call(u, |u| s.dma_alloc(badge, u.get_mr(0), CapPtr::null()).map(
+                    |(paddr, frame)|{
+                        u.set_mr(0, paddr);
+                        frame.cap()
+                    })
+                )
             },
             (protocol::RESOURCE_PROTO, protocol::resource::FREE) => |s: &mut Self, u: &mut UTCB| {
                 handle_call(u, |u| s.free(badge, CapPtr::from(u.get_mr(0))))
@@ -114,7 +118,7 @@ impl<'a> SystemService for WarrenManager<'a> {
             },
             (protocol::RESOURCE_PROTO, protocol::resource::MMAP) => |s: &mut Self, u: &mut UTCB| {
                 handle_call(u, |u| {
-                    let frame =Frame::from(s.recv);
+                    let frame = Frame::from(s.recv);
                     let addr = u.get_mr(1);
                     let len = u.get_mr(2);
                     s.mmap(badge, frame, addr, len)?;

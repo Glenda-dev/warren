@@ -29,12 +29,16 @@ impl<'a> ResourceService for WarrenManager<'a> {
         flags: usize,
         _recv: CapPtr,
     ) -> Result<CapPtr, Error> {
-        log!("alloc: pid: {:?}, type={:?}, flags={:#x}", pid, obj_type, flags);
-        let p = self.processes.get_mut(&pid).ok_or(Error::NotFound)?;
-        let slot = self.ctx.cspace_mgr.alloc(self.ctx.untyped_mgr)?;
-        self.ctx.untyped_mgr.alloc(obj_type, flags, self.ctx.root_cnode, slot)?;
-        p.allocated_slots.push(slot);
-        Ok(slot)
+        self.do_alloc(pid, obj_type, flags).map(|(_, cap)| cap)
+    }
+
+    fn dma_alloc(
+        &mut self,
+        pid: Badge,
+        pages: usize,
+        _recv: CapPtr,
+    ) -> Result<(usize, Frame), Error> {
+        self.do_alloc(pid, CapType::Frame, pages).map(|(paddr, cap)| (paddr, Frame::from(cap)))
     }
 
     fn free(&mut self, pid: Badge, cap: CapPtr) -> Result<(), Error> {
@@ -122,5 +126,21 @@ impl<'a> ResourceService for WarrenManager<'a> {
         self.ctx.vspace_mgr.unmap_scratch(vaddr, pages)?;
         p.allocated_slots.push(slot);
         Ok((frame, len))
+    }
+}
+
+impl<'a> WarrenManager<'a> {
+    fn do_alloc(
+        &mut self,
+        pid: Badge,
+        obj_type: CapType,
+        flags: usize,
+    ) -> Result<(usize, CapPtr), Error> {
+        log!("alloc: pid: {:?}, type={:?}, flags={:#x}", pid, obj_type, flags);
+        let p = self.processes.get_mut(&pid).ok_or(Error::NotFound)?;
+        let slot = self.ctx.cspace_mgr.alloc(self.ctx.untyped_mgr)?;
+        let paddr = self.ctx.untyped_mgr.alloc(obj_type, flags, self.ctx.root_cnode, slot)?;
+        p.allocated_slots.push(slot);
+        Ok((paddr, slot))
     }
 }
