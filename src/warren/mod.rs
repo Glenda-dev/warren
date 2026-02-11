@@ -7,18 +7,15 @@ mod server;
 mod thread;
 
 pub use data::*;
-pub use resource::InitRes;
 pub use thread::TLS;
 
-use crate::layout::STACK_SIZE;
+use crate::layout::{BOOTINFO_SLOT, IRQ_SLOT, MMIO_SLOT, PLATFORM_SLOT, STACK_SIZE, UNTYPED_SLOT};
+use crate::warren::resource::ResourceRegistry;
 use alloc::collections::{BTreeMap, VecDeque};
 use alloc::string::ToString;
 use glenda::arch::mem::{KSTACK_PAGES, PGSIZE};
-use glenda::cap::{
-    BOOTINFO_SLOT, CSPACE_SLOT, IRQ_SLOT, KERNEL_SLOT, MMIO_SLOT, MONITOR_SLOT, TCB_SLOT,
-    UNTYPED_SLOT, VSPACE_SLOT,
-};
 use glenda::cap::{CNode, CapPtr, CapType, Endpoint, Frame, Reply, Rights, TCB, VSpace};
+use glenda::cap::{CSPACE_SLOT, KERNEL_SLOT, MONITOR_SLOT, TCB_SLOT, VSPACE_SLOT};
 use glenda::error::Error;
 use glenda::ipc::{Badge, IpcRouter};
 use glenda::mem::Perms;
@@ -43,6 +40,7 @@ pub struct WarrenManager<'a> {
     // Communication
     endpoint: Endpoint,
     reply: Reply,
+    recv: CapPtr,
 
     // Sync
     wait_queues: BTreeMap<(Badge, usize), VecDeque<CapPtr>>,
@@ -50,8 +48,8 @@ pub struct WarrenManager<'a> {
     // Initrd
     initrd: Initrd<'a>,
 
-    // Init res
-    res: InitRes,
+    // Resources
+    res: ResourceRegistry,
 
     // Context
     ctx: SystemContext<'a>,
@@ -84,14 +82,17 @@ impl<'a> WarrenManager<'a> {
             pid: Badge::null(),
             endpoint: Endpoint::from(CapPtr::null()),
             reply: Reply::from(CapPtr::null()),
+            recv: CapPtr::null(),
             wait_queues: BTreeMap::new(),
             initrd,
-            res: InitRes {
+            res: ResourceRegistry {
                 kernel_cap: KERNEL_SLOT,
                 irq_cap: IRQ_SLOT,
                 mmio_cap: MMIO_SLOT,
                 untyped_cap: UNTYPED_SLOT,
                 bootinfo_cap: BOOTINFO_SLOT,
+                platform_cap: PLATFORM_SLOT,
+                endpoints: BTreeMap::new(),
             },
             ctx: SystemContext { root_cnode, vspace_mgr, untyped_mgr, cspace_mgr },
             running: false,
@@ -157,7 +158,7 @@ impl<'a> WarrenManager<'a> {
         let mut vspace_mgr = VSpaceManager::new(child_pd, 0, 0);
         child_tcb.configure(child_cnode, child_pd, child_utcb, child_trapframe, child_kstack)?;
         // Enable fault handler with badge=pid
-        //child_tcb.set_fault_handler(child_endpoint, true)?;
+        child_tcb.set_fault_handler(child_endpoint, true)?;
 
         vspace_mgr.map_frame(
             child_utcb,

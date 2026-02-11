@@ -9,8 +9,9 @@ mod elf;
 mod layout;
 mod warren;
 
-use glenda::cap::CapType;
+use crate::layout::UNTYPED_SLOT;
 use glenda::cap::{CSPACE_CAP, MONITOR_CAP, MONITOR_SLOT, REPLY_SLOT, VSPACE_CAP};
+use glenda::cap::{CapType, RECV_SLOT};
 use glenda::error::Error;
 use glenda::interface::SystemService;
 use glenda::mem::BOOTINFO_VA;
@@ -49,7 +50,7 @@ fn main() -> usize {
     log!("Initrd parsed. Size: {} KB", initrd_size / 1024);
 
     // Init Resource Manager
-    let mut untyped_mgr = UntypedManager::new(bootinfo);
+    let mut untyped_mgr = UntypedManager::new(bootinfo, UNTYPED_SLOT);
     let mut vspace_mgr = VSpaceManager::new(VSPACE_CAP, layout::SCRATCH_VA, layout::SCRATCH_SIZE);
     let mut cspace_mgr = CSpaceManager::new(CSPACE_CAP, 16);
 
@@ -71,7 +72,7 @@ fn main() -> usize {
 }
 
 fn load_warren(manager: &mut WarrenManager) -> Result<(), Error> {
-    manager.listen(MONITOR_CAP, REPLY_SLOT)?;
+    manager.listen(MONITOR_CAP, REPLY_SLOT, RECV_SLOT)?;
     manager.init()?;
     Ok(())
 }

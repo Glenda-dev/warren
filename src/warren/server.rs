@@ -1,32 +1,34 @@
 use super::WarrenManager;
 use crate::layout::INIT_NAME;
 use crate::log;
-use glenda::cap::RECV_SLOT;
+use glenda::cap::MONITOR_SLOT;
 use glenda::cap::{CapPtr, CapType, Endpoint, Frame, Reply};
 use glenda::error::Error;
 use glenda::interface::{
-    FaultService, InitResourceService, MemoryService, ProcessService, ResourceService,
-    SystemService,
+    FaultService, MemoryService, ProcessService, ResourceService, SystemService,
 };
 use glenda::ipc::server::{handle_call, handle_cap_call};
-use glenda::ipc::{Badge, MsgFlags, MsgTag, UTCB};
+use glenda::ipc::{Badge, MsgTag, UTCB};
 use glenda::protocol;
-use glenda::protocol::resource::InitCap;
+use glenda::protocol::resource::ResourceType;
+use glenda::protocol::resource::{PROCESS_ENDPOINT, RESOURCE_ENDPOINT};
 
 impl<'a> SystemService for WarrenManager<'a> {
     fn init(&mut self) -> Result<(), Error> {
-        // Use trait interface to spawn
+        self.res.endpoints.insert(PROCESS_ENDPOINT, MONITOR_SLOT);
+        self.res.endpoints.insert(RESOURCE_ENDPOINT, MONITOR_SLOT);
         self.spawn(Badge::null(), INIT_NAME).map(|pid| {
             log!("Started init {} with pid: {:?}", INIT_NAME, pid);
         })
     }
-    fn listen(&mut self, ep: Endpoint, reply: CapPtr) -> Result<(), Error> {
+    fn listen(&mut self, ep: Endpoint, reply: CapPtr, recv: CapPtr) -> Result<(), Error> {
         self.endpoint = ep;
         self.reply = Reply::from(reply);
+        self.recv = recv;
         Ok(())
     }
     fn run(&mut self) -> Result<(), Error> {
-        if self.endpoint.cap().is_null() || self.reply.cap().is_null() {
+        if self.endpoint.cap().is_null() || self.reply.cap().is_null() || self.recv.is_null() {
             return Err(Error::NotInitialized);
         }
         self.running = true;
@@ -34,7 +36,7 @@ impl<'a> SystemService for WarrenManager<'a> {
             let mut utcb = unsafe { UTCB::new() };
             utcb.clear();
             utcb.set_reply_window(self.reply.cap());
-            utcb.set_recv_window(RECV_SLOT);
+            utcb.set_recv_window(self.recv);
             match self.endpoint.recv(&mut utcb) {
                 Ok(b) => b,
                 Err(e) => {
@@ -112,14 +114,11 @@ impl<'a> SystemService for WarrenManager<'a> {
             },
             (protocol::RESOURCE_PROTO, protocol::resource::MMAP) => |s: &mut Self, u: &mut UTCB| {
                 handle_call(u, |u| {
-                    let frame = if u.get_msg_tag().flags().contains(MsgFlags::HAS_CAP) {
-                        Frame::from(RECV_SLOT)
-                    } else {
-                        Frame::from(CapPtr::from(u.get_mr(0)))
-                    };
+                    let frame =Frame::from(s.recv);
                     let addr = u.get_mr(1);
                     let len = u.get_mr(2);
-                    s.mmap(badge, frame, addr, len)
+                    s.mmap(badge, frame, addr, len)?;
+                    s.ctx.root_cnode.delete(s.recv)
                 })
             },
             (protocol::RESOURCE_PROTO, protocol::resource::MUNMAP) => |s: &mut Self, u: &mut UTCB| {
@@ -128,14 +127,24 @@ impl<'a> SystemService for WarrenManager<'a> {
             (protocol::RESOURCE_PROTO, protocol::resource::GET_CAP) => |s: &mut Self, u: &mut UTCB| {
                  handle_cap_call(u, |u| {
                      let captype_num = u.get_mr(0);
-                     let captype = InitCap::from(captype_num);
-                     s.get_cap(badge, captype, CapPtr::null())
+                     let captype = ResourceType::from(captype_num);
+                     let id = u.get_mr(1);
+                     s.get_cap(badge, captype, id, CapPtr::null())
                  })
             },
-            (protocol::RESOURCE_PROTO, protocol::resource::GET_FILE) => |s: &mut Self, u: &mut UTCB| {
+            (protocol::RESOURCE_PROTO, protocol::resource::REGISTER_CAP) => |s: &mut Self, u: &mut UTCB| {
+                handle_call(u, |u| {
+                    let captype_num = u.get_mr(0);
+                    let captype = ResourceType::from(captype_num);
+                    let id = u.get_mr(1);
+                    let cap = s.recv;
+                    s.register_cap(badge, captype, id, cap)
+                })
+            },
+            (protocol::RESOURCE_PROTO, protocol::resource::GET_CONFIG) => |s: &mut Self, u: &mut UTCB| {
                 handle_cap_call(u, |u| {
                     let name = unsafe {u.read_str()?};
-                    let (frame, len) = s.get_file(badge, &name, CapPtr::null())?;
+                    let (frame, len) = s.get_config(badge, &name, CapPtr::null())?;
                     u.set_mr(0, len);
                     Ok(frame.cap())
                 })
@@ -155,7 +164,7 @@ impl<'a> SystemService for WarrenManager<'a> {
                     _ => s.unknown_fault(badge, mrs[0], mrs[1], mrs[2]),
                 };
                 if let Err(e) = res {
-                    log!("Failed to handle kernel protocol: {:?}", e);
+                    panic!("Failed to handle kernel protocol: {:?}", e);
                 }
                 Ok(())
             },

@@ -150,7 +150,7 @@ impl<'a> ProcessService for WarrenManager<'a> {
         } else {
             log!("Failed to find process with pid: {:?}", pid);
         }
-        Err(Error::Success)
+        Ok(())
     }
 
     fn get_pid(&mut self, pid: Badge) -> Result<usize, Error> {
