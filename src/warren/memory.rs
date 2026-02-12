@@ -1,7 +1,7 @@
 use super::WarrenManager;
 use crate::log;
 use glenda::arch::mem::PGSIZE;
-use glenda::cap::{CapType, Frame};
+use glenda::cap::{CapPtr, CapType, Frame};
 use glenda::error::Error;
 use glenda::interface::MemoryService;
 use glenda::ipc::Badge;
@@ -26,7 +26,7 @@ impl<'a> MemoryService for WarrenManager<'a> {
 
             for vaddr in (start_page..end_page).step_by(PGSIZE) {
                 let slot = self.ctx.cspace_mgr.alloc(self.ctx.untyped_mgr)?;
-                self.ctx.untyped_mgr.alloc(CapType::Frame, 1, self.ctx.root_cnode, slot)?;
+                self.ctx.untyped_mgr.alloc(CapType::Frame, 1, CapPtr::concat(self.ctx.root_cnode.cap(), slot))?;
                 process.vspace_mgr.map_frame(
                     Frame::from(slot),
                     vaddr,

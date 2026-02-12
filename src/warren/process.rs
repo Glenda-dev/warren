@@ -52,31 +52,30 @@ impl<'a> ProcessService for WarrenManager<'a> {
         let pid = self.alloc_pid()?;
 
         let cnode_slot = self.ctx.cspace_mgr.alloc(self.ctx.untyped_mgr)?;
-        self.ctx.untyped_mgr.alloc(CapType::CNode, 0, self.ctx.root_cnode, cnode_slot)?;
+        self.ctx.untyped_mgr.alloc(CapType::CNode, 0, CapPtr::concat(self.ctx.root_cnode.cap(), cnode_slot))?;
         let child_cnode = CNode::from(cnode_slot);
 
         let pd_slot = self.ctx.cspace_mgr.alloc(self.ctx.untyped_mgr)?;
-        self.ctx.untyped_mgr.alloc(CapType::VSpace, 0, self.ctx.root_cnode, pd_slot)?;
+        self.ctx.untyped_mgr.alloc(CapType::VSpace, 0, CapPtr::concat(self.ctx.root_cnode.cap(), pd_slot))?;
         let child_pd = VSpace::from(pd_slot);
 
         let tcb_slot = self.ctx.cspace_mgr.alloc(self.ctx.untyped_mgr)?;
-        self.ctx.untyped_mgr.alloc(CapType::TCB, 0, self.ctx.root_cnode, tcb_slot)?;
+        self.ctx.untyped_mgr.alloc(CapType::TCB, 0, CapPtr::concat(self.ctx.root_cnode.cap(), tcb_slot))?;
         let child_tcb = TCB::from(tcb_slot);
 
         let utcb_slot = self.ctx.cspace_mgr.alloc(self.ctx.untyped_mgr)?;
-        self.ctx.untyped_mgr.alloc(CapType::Frame, 1, self.ctx.root_cnode, utcb_slot)?;
+        self.ctx.untyped_mgr.alloc(CapType::Frame, 1, CapPtr::concat(self.ctx.root_cnode.cap(), utcb_slot))?;
         let child_utcb = Frame::from(utcb_slot);
 
         let trapframe_slot = self.ctx.cspace_mgr.alloc(self.ctx.untyped_mgr)?;
-        self.ctx.untyped_mgr.alloc(CapType::Frame, 1, self.ctx.root_cnode, trapframe_slot)?;
+        self.ctx.untyped_mgr.alloc(CapType::Frame, 1, CapPtr::concat(self.ctx.root_cnode.cap(), trapframe_slot))?;
         let child_trapframe = Frame::from(trapframe_slot);
 
         let kstack_slot = self.ctx.cspace_mgr.alloc(self.ctx.untyped_mgr)?;
         self.ctx.untyped_mgr.alloc(
             CapType::Frame,
             KSTACK_PAGES,
-            self.ctx.root_cnode,
-            kstack_slot,
+            CapPtr::concat(self.ctx.root_cnode.cap(), kstack_slot),
         )?;
         let child_kstack = Frame::from(kstack_slot);
 
@@ -216,7 +215,7 @@ impl<'a> ProcessService for WarrenManager<'a> {
                     let num_pages = (end_page - start_page) / PGSIZE;
 
                     let frame_cap = self.ctx.cspace_mgr.alloc(self.ctx.untyped_mgr)?;
-                    self.ctx.untyped_mgr.alloc(CapType::Frame, num_pages, root_cnode, frame_cap)?;
+                    self.ctx.untyped_mgr.alloc(CapType::Frame, num_pages, CapPtr::concat(root_cnode.cap(), frame_cap))?;
                     let frame = Frame::from(frame_cap);
 
                     process.vspace_mgr.map_frame(

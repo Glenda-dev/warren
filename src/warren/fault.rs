@@ -1,7 +1,7 @@
 use super::WarrenManager;
 use crate::log;
 use glenda::arch::mem::PGSIZE;
-use glenda::cap::{CapType, Frame};
+use glenda::cap::{CapPtr, CapType, Frame};
 use glenda::error::Error;
 use glenda::interface::{FaultService, ProcessService};
 use glenda::ipc::{Badge, UTCB};
@@ -45,7 +45,7 @@ impl<'a> FaultService for WarrenManager<'a> {
         // 1. Allocate Frame
         let frame_slot = self.ctx.cspace_mgr.alloc(self.ctx.untyped_mgr)?;
 
-        self.ctx.untyped_mgr.alloc(CapType::Frame, 1, self.ctx.root_cnode, frame_slot)?;
+        self.ctx.untyped_mgr.alloc(CapType::Frame, 1, CapPtr::concat(self.ctx.root_cnode.cap(), frame_slot))?;
 
         // 2. Map Frame
         let page_base = align_down(addr, PGSIZE);

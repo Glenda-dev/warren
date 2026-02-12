@@ -10,7 +10,7 @@ mod layout;
 mod warren;
 
 use crate::layout::UNTYPED_SLOT;
-use glenda::cap::{CSPACE_CAP, MONITOR_CAP, MONITOR_SLOT, REPLY_SLOT, VSPACE_CAP};
+use glenda::cap::{CSPACE_CAP, MONITOR_CAP, MONITOR_SLOT, REPLY_SLOT, VSPACE_CAP, CapPtr};
 use glenda::cap::{CapType, RECV_SLOT};
 use glenda::error::Error;
 use glenda::interface::SystemService;
@@ -55,7 +55,7 @@ fn main() -> usize {
     let mut cspace_mgr = CSpaceManager::new(CSPACE_CAP, 16);
 
     // Allocated caps
-    if untyped_mgr.alloc(CapType::Endpoint, 0, CSPACE_CAP, MONITOR_SLOT).is_err() {
+    if untyped_mgr.alloc(CapType::Endpoint, 0, CapPtr::concat(CSPACE_CAP.cap(), MONITOR_SLOT)).is_err() {
         log!("Failed to create endpoint");
         return 1;
     }

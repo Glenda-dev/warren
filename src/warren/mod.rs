@@ -112,40 +112,47 @@ impl<'a> WarrenManager<'a> {
         let child_endpoint = Endpoint::from(ep_slot);
 
         let cnode_slot = self.ctx.cspace_mgr.alloc(self.ctx.untyped_mgr)?;
-        self.ctx.untyped_mgr.alloc(CapType::CNode, 0, self.ctx.root_cnode, cnode_slot)?;
+        let full_cnode_dest = CapPtr::concat(self.ctx.root_cnode.cap(), cnode_slot);
+        self.ctx.untyped_mgr.alloc(CapType::CNode, 0, full_cnode_dest)?;
         let child_cnode = CNode::from(cnode_slot);
 
         let pd_slot = self.ctx.cspace_mgr.alloc(self.ctx.untyped_mgr)?;
-        self.ctx.untyped_mgr.alloc(CapType::VSpace, 0, self.ctx.root_cnode, pd_slot)?;
+        let full_pd_dest = CapPtr::concat(self.ctx.root_cnode.cap(), pd_slot);
+        self.ctx.untyped_mgr.alloc(CapType::VSpace, 0, full_pd_dest)?;
         let child_pd = VSpace::from(pd_slot);
 
         let tcb_slot = self.ctx.cspace_mgr.alloc(self.ctx.untyped_mgr)?;
-        self.ctx.untyped_mgr.alloc(CapType::TCB, 0, self.ctx.root_cnode, tcb_slot)?;
+        let full_tcb_dest = CapPtr::concat(self.ctx.root_cnode.cap(), tcb_slot);
+        self.ctx.untyped_mgr.alloc(CapType::TCB, 0, full_tcb_dest)?;
         let child_tcb = TCB::from(tcb_slot);
 
         let utcb_slot = self.ctx.cspace_mgr.alloc(self.ctx.untyped_mgr)?;
-        self.ctx.untyped_mgr.alloc(CapType::Frame, 1, self.ctx.root_cnode, utcb_slot)?;
+        let full_utcb_dest = CapPtr::concat(self.ctx.root_cnode.cap(), utcb_slot);
+        self.ctx.untyped_mgr.alloc(CapType::Frame, 1, full_utcb_dest)?;
         let child_utcb = Frame::from(utcb_slot);
 
         let trapframe_slot = self.ctx.cspace_mgr.alloc(self.ctx.untyped_mgr)?;
-        self.ctx.untyped_mgr.alloc(CapType::Frame, 1, self.ctx.root_cnode, trapframe_slot)?;
+        let full_tf_dest = CapPtr::concat(self.ctx.root_cnode.cap(), trapframe_slot);
+        self.ctx.untyped_mgr.alloc(CapType::Frame, 1, full_tf_dest)?;
         let child_trapframe = Frame::from(trapframe_slot);
 
         let stack_slot = self.ctx.cspace_mgr.alloc(self.ctx.untyped_mgr)?;
-        self.ctx.untyped_mgr.alloc(CapType::Frame, 1, self.ctx.root_cnode, stack_slot)?;
+        let full_stack_dest = CapPtr::concat(self.ctx.root_cnode.cap(), stack_slot);
+        self.ctx.untyped_mgr.alloc(CapType::Frame, 1, full_stack_dest)?;
         let child_stack = Frame::from(stack_slot);
 
         let kstack_slot = self.ctx.cspace_mgr.alloc(self.ctx.untyped_mgr)?;
+        let full_kstack_dest = CapPtr::concat(self.ctx.root_cnode.cap(), kstack_slot);
         self.ctx.untyped_mgr.alloc(
             CapType::Frame,
             KSTACK_PAGES,
-            self.ctx.root_cnode,
-            kstack_slot,
+            full_kstack_dest,
         )?;
         let child_kstack = Frame::from(kstack_slot);
 
         let heap_slot = self.ctx.cspace_mgr.alloc(self.ctx.untyped_mgr)?;
-        self.ctx.untyped_mgr.alloc(CapType::Frame, HEAP_PAGES, self.ctx.root_cnode, heap_slot)?;
+        let full_heap_dest = CapPtr::concat(self.ctx.root_cnode.cap(), heap_slot);
+        self.ctx.untyped_mgr.alloc(CapType::Frame, HEAP_PAGES, full_heap_dest)?;
         let child_heap = Frame::from(heap_slot);
 
         child_cnode.copy(child_pd.cap(), VSPACE_SLOT, Rights::ALL)?;
