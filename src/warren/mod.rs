@@ -9,7 +9,7 @@ mod thread;
 pub use data::*;
 pub use thread::TLS;
 
-use crate::layout::{BOOTINFO_SLOT, IRQ_SLOT, MMIO_SLOT, PLATFORM_SLOT, STACK_SIZE, UNTYPED_SLOT};
+use crate::layout::{BOOTINFO_SLOT, IRQ_SLOT, MMIO_SLOT, STACK_SIZE, UNTYPED_SLOT};
 use crate::warren::resource::ResourceRegistry;
 use alloc::collections::{BTreeMap, VecDeque};
 use alloc::string::ToString;
@@ -91,7 +91,6 @@ impl<'a> WarrenManager<'a> {
                 mmio_cap: MMIO_SLOT,
                 untyped_cap: UNTYPED_SLOT,
                 bootinfo_cap: BOOTINFO_SLOT,
-                platform_cap: PLATFORM_SLOT,
                 endpoints: BTreeMap::new(),
             },
             ctx: SystemContext { root_cnode, vspace_mgr, untyped_mgr, cspace_mgr },
@@ -143,11 +142,7 @@ impl<'a> WarrenManager<'a> {
 
         let kstack_slot = self.ctx.cspace_mgr.alloc(self.ctx.untyped_mgr)?;
         let full_kstack_dest = CapPtr::concat(self.ctx.root_cnode.cap(), kstack_slot);
-        self.ctx.untyped_mgr.alloc(
-            CapType::Frame,
-            KSTACK_PAGES,
-            full_kstack_dest,
-        )?;
+        self.ctx.untyped_mgr.alloc(CapType::Frame, KSTACK_PAGES, full_kstack_dest)?;
         let child_kstack = Frame::from(kstack_slot);
 
         let heap_slot = self.ctx.cspace_mgr.alloc(self.ctx.untyped_mgr)?;

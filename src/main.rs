@@ -10,11 +10,11 @@ mod layout;
 mod warren;
 
 use crate::layout::UNTYPED_SLOT;
-use glenda::cap::{CSPACE_CAP, MONITOR_CAP, MONITOR_SLOT, REPLY_SLOT, VSPACE_CAP, CapPtr};
+use glenda::cap::{CSPACE_CAP, CapPtr, MONITOR_CAP, MONITOR_SLOT, REPLY_SLOT, VSPACE_CAP};
 use glenda::cap::{CapType, RECV_SLOT};
 use glenda::error::Error;
 use glenda::interface::SystemService;
-use glenda::mem::BOOTINFO_VA;
+use glenda::mem::{BOOTINFO_VA, INITRD_VA};
 use glenda::utils::bootinfo::BootInfo;
 use glenda::utils::initrd::Initrd;
 use glenda::utils::manager::{CSpaceManager, UntypedManager, UntypedService, VSpaceManager};
@@ -36,11 +36,11 @@ fn main() -> usize {
     log!("{}", bootinfo);
 
     // Parse Initrd
-    let initrd_start = bootinfo.initrd_start;
+    let initrd_start = INITRD_VA + bootinfo.initrd_offset;
     let initrd_size = bootinfo.initrd_size;
 
     // Safety check
-    if initrd_start == 0 || initrd_size == 0 {
+    if initrd_size == 0 {
         panic!("Warren: Initrd info missing in BootInfo");
     }
 
@@ -55,7 +55,10 @@ fn main() -> usize {
     let mut cspace_mgr = CSpaceManager::new(CSPACE_CAP, 16);
 
     // Allocated caps
-    if untyped_mgr.alloc(CapType::Endpoint, 0, CapPtr::concat(CSPACE_CAP.cap(), MONITOR_SLOT)).is_err() {
+    if untyped_mgr
+        .alloc(CapType::Endpoint, 0, CapPtr::concat(CSPACE_CAP.cap(), MONITOR_SLOT))
+        .is_err()
+    {
         log!("Failed to create endpoint");
         return 1;
     }

@@ -17,7 +17,6 @@ pub struct ResourceRegistry {
     pub mmio_cap: CapPtr,
     pub untyped_cap: CapPtr,
     pub bootinfo_cap: CapPtr,
-    pub platform_cap: CapPtr,
     pub endpoints: BTreeMap<usize, CapPtr>,
 }
 
@@ -62,7 +61,6 @@ impl<'a> ResourceService for WarrenManager<'a> {
             ResourceType::Irq => self.res.irq_cap,
             ResourceType::Mmio => self.res.mmio_cap,
             ResourceType::Bootinfo => self.res.bootinfo_cap,
-            ResourceType::Platform => self.res.platform_cap,
             ResourceType::Endpoint => {
                 let p = self.processes.get_mut(&pid).ok_or(Error::NotFound)?;
                 let ep = self.res.endpoints.get(&id).ok_or(Error::NotFound)?;
@@ -109,7 +107,11 @@ impl<'a> ResourceService for WarrenManager<'a> {
         let len = file.len();
         let pages = align_up(len, PGSIZE) / PGSIZE;
         let slot = self.ctx.cspace_mgr.alloc(self.ctx.untyped_mgr)?;
-        self.ctx.untyped_mgr.alloc(CapType::Frame, pages, CapPtr::concat(self.ctx.root_cnode.cap(), slot))?;
+        self.ctx.untyped_mgr.alloc(
+            CapType::Frame,
+            pages,
+            CapPtr::concat(self.ctx.root_cnode.cap(), slot),
+        )?;
         let frame = Frame::from(slot);
         let vaddr = self.ctx.vspace_mgr.map_scratch(
             frame,
@@ -139,7 +141,11 @@ impl<'a> WarrenManager<'a> {
         log!("alloc: pid: {:?}, type={:?}, flags={:#x}", pid, obj_type, flags);
         let p = self.processes.get_mut(&pid).ok_or(Error::NotFound)?;
         let slot = self.ctx.cspace_mgr.alloc(self.ctx.untyped_mgr)?;
-        let paddr = self.ctx.untyped_mgr.alloc(obj_type, flags, CapPtr::concat(self.ctx.root_cnode.cap(), slot))?;
+        let paddr = self.ctx.untyped_mgr.alloc(
+            obj_type,
+            flags,
+            CapPtr::concat(self.ctx.root_cnode.cap(), slot),
+        )?;
         p.allocated_slots.push(slot);
         Ok((paddr, slot))
     }
