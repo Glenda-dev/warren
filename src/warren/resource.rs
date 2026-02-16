@@ -58,7 +58,13 @@ impl<'a> ResourceService for WarrenManager<'a> {
         let cptr = match cap_type {
             ResourceType::Kernel => self.res.kernel_cap,
             ResourceType::Untyped => self.res.untyped_cap,
-            ResourceType::Irq => self.res.irq_cap,
+            ResourceType::Irq => {
+                let slot = self.ctx.cspace_mgr.alloc(self.ctx.untyped_mgr)?;
+                self.ctx.root_cnode.mint(self.res.irq_cap, slot, Badge::new(id), Rights::ALL)?;
+                let p = self.processes.get_mut(&pid).ok_or(Error::NotFound)?;
+                p.allocated_slots.push(slot);
+                slot
+            }
             ResourceType::Mmio => self.res.mmio_cap,
             ResourceType::Bootinfo => self.res.bootinfo_cap,
             ResourceType::Endpoint => {
