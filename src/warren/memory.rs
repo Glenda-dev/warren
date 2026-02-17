@@ -21,17 +21,24 @@ impl<'a> MemoryService for WarrenManager<'a> {
         }
 
         if incr > 0 {
-            let start_page = (old_brk + PGSIZE - 1) & !(PGSIZE - 1);
-            let end_page = (new_brk + PGSIZE - 1) & !(PGSIZE - 1);
+            // 只映射尚未映射的新页面
+            let start_map = align_up(old_brk, PGSIZE);
+            let end_map = align_up(new_brk, PGSIZE);
 
-            for vaddr in (start_page..end_page).step_by(PGSIZE) {
+            if end_map > start_map {
+                let pages = (end_map - start_map) / PGSIZE;
+
                 let slot = self.ctx.cspace_mgr.alloc(self.ctx.untyped_mgr)?;
-                self.ctx.untyped_mgr.alloc(CapType::Frame, 1, CapPtr::concat(self.ctx.root_cnode.cap(), slot))?;
+                self.ctx.untyped_mgr.alloc(
+                    CapType::Frame,
+                    pages,
+                    CapPtr::concat(self.ctx.root_cnode.cap(), slot),
+                )?;
                 process.vspace_mgr.map_frame(
                     Frame::from(slot),
-                    vaddr,
+                    start_map,
                     Perms::READ | Perms::WRITE | Perms::USER,
-                    1,
+                    pages,
                     self.ctx.untyped_mgr,
                     self.ctx.cspace_mgr,
                     self.ctx.root_cnode,
@@ -39,8 +46,9 @@ impl<'a> MemoryService for WarrenManager<'a> {
             }
         }
         process.heap_brk = new_brk;
-        log!("brk: new_brk={:#x}", new_brk);
-        Ok(new_brk)
+        log!("brk: old_brk={:#x}, new_brk={:#x}", old_brk, new_brk);
+        // 返回 old_brk 以符合 sbrk 语义（返回新区域的起始地址）
+        Ok(old_brk)
     }
 
     fn mmap(&mut self, pid: Badge, frame: Frame, addr: usize, len: usize) -> Result<usize, Error> {

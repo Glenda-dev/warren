@@ -1,10 +1,6 @@
-use super::{Process, TLS};
-use super::{ProcessState, WarrenManager};
-use crate::elf::ElfFile;
-use crate::elf::{PF_W, PF_X, PT_LOAD, PT_TLS};
+use super::{Process, ProcessState, WarrenManager};
 use crate::layout::SCRATCH_VA;
 use crate::log;
-use core::cmp::min;
 use glenda::arch::mem::{KSTACK_PAGES, PGSIZE};
 use glenda::cap::MONITOR_SLOT;
 use glenda::cap::{CNode, CapPtr, CapType, Frame, Rights, TCB, VSpace};
@@ -13,21 +9,20 @@ use glenda::interface::ProcessService;
 use glenda::ipc::Badge;
 use glenda::mem::Perms;
 use glenda::mem::{STACK_BASE, get_trapframe_va, get_utcb_va};
-use glenda::utils::align::align_up;
 use glenda::utils::manager::VSpaceManager;
 use glenda::utils::manager::{CSpaceService, UntypedService, VSpaceService};
 
 pub const SERVICE_PRIORITY: u8 = 128;
 
 impl<'a> ProcessService for WarrenManager<'a> {
-    fn spawn(&mut self, parent_pid: Badge, name: &str) -> Result<usize, Error> {
-        log!("Spawning process: {}, parent_pid: {:?}", name, parent_pid);
-        let file = self.initrd.get_file(name).ok_or(Error::NotFound)?.to_vec();
-        let mut process = self.create(name)?;
+    fn spawn(&mut self, parent_pid: Badge, path: &str) -> Result<usize, Error> {
+        log!("Spawning process: {}, parent_pid: {:?}", path, parent_pid);
+        let file = self.initrd.get_file(path).ok_or(Error::NotFound)?.to_vec();
+        let mut process = self.create(path)?;
         process.parent_pid = parent_pid;
         let pid = process.pid;
         self.processes.insert(pid, process);
-        match self.exec(pid, &file) {
+        match self.load_elf(pid, &file) {
             Ok((entry, _heap)) => {
                 let process = self.processes.get_mut(&pid).unwrap();
                 let thread = process.threads.get_mut(&0).unwrap();
@@ -42,6 +37,11 @@ impl<'a> ProcessService for WarrenManager<'a> {
                 Err(e)
             }
         }
+    }
+
+    fn exec(&mut self, pid: Badge, _path: &str) -> Result<(usize, usize), Error> {
+        log!("Executing new ELF for pid: {:?}", pid);
+        Err(Error::NotImplemented)
     }
 
     fn fork(&mut self, parent_pid: Badge) -> Result<usize, Error> {
@@ -201,113 +201,6 @@ impl<'a> ProcessService for WarrenManager<'a> {
         }
         let cnode = p.cnode;
         Ok(cnode)
-    }
-
-    fn exec(&mut self, pid: Badge, elf_data: &[u8]) -> Result<(usize, usize), Error> {
-        log!("Loading image for pid: {:?}, size: {} KB", pid, elf_data.len() / 1024);
-        let elf = ElfFile::new(elf_data).map_err(|_| Error::InvalidArgs)?;
-        let mut max_vaddr = 0;
-        let process = self.processes.get_mut(&pid).ok_or(Error::NotFound)?;
-        let root_cnode = self.ctx.root_cnode;
-        let mut _tls = None;
-        for phdr in elf.program_headers() {
-            let type_ = phdr.p_type as usize;
-            let vaddr = phdr.p_vaddr as usize;
-            let mem_size = phdr.p_memsz as usize;
-            let file_size = phdr.p_filesz as usize;
-            let offset = phdr.p_offset as usize;
-            let align = phdr.p_align as usize;
-
-            if vaddr + mem_size > max_vaddr {
-                max_vaddr = vaddr + mem_size;
-            }
-            let mut perms = Perms::USER | Perms::READ;
-            if phdr.p_flags & PF_W != 0 {
-                perms |= Perms::WRITE;
-            }
-            if phdr.p_flags & PF_X != 0 {
-                perms |= Perms::EXECUTE;
-            }
-
-            log!(
-                "Loading segment: type={:#x}, vaddr={:#x}, mem_size={:#x}, file_size={:#x}, perms={:?}",
-                type_,
-                vaddr,
-                mem_size,
-                file_size,
-                perms
-            );
-            match phdr.p_type {
-                PT_LOAD => {
-                    let start_page = vaddr & !(PGSIZE - 1);
-                    let end_page = (vaddr + mem_size + PGSIZE - 1) & !(PGSIZE - 1);
-                    let num_pages = (end_page - start_page) / PGSIZE;
-
-                    let frame_cap = self.ctx.cspace_mgr.alloc(self.ctx.untyped_mgr)?;
-                    self.ctx.untyped_mgr.alloc(
-                        CapType::Frame,
-                        num_pages,
-                        CapPtr::concat(root_cnode.cap(), frame_cap),
-                    )?;
-                    let frame = Frame::from(frame_cap);
-
-                    process.vspace_mgr.map_frame(
-                        frame,
-                        start_page,
-                        perms,
-                        num_pages,
-                        self.ctx.untyped_mgr,
-                        self.ctx.cspace_mgr,
-                        root_cnode,
-                    )?;
-                    let scratch_slot = self.ctx.cspace_mgr.alloc(self.ctx.untyped_mgr)?;
-                    self.ctx.root_cnode.copy(frame_cap, scratch_slot, Rights::ALL)?;
-                    let scratch_frame = Frame::from(scratch_slot);
-
-                    let scratch_vaddr = self.ctx.vspace_mgr.map_scratch(
-                        scratch_frame,
-                        Perms::READ | Perms::WRITE | Perms::USER,
-                        num_pages,
-                        self.ctx.untyped_mgr,
-                        self.ctx.cspace_mgr,
-                        root_cnode,
-                    )?;
-
-                    let dest_slice = unsafe {
-                        core::slice::from_raw_parts_mut(
-                            scratch_vaddr as *mut u8,
-                            num_pages * PGSIZE,
-                        )
-                    };
-                    dest_slice.fill(0);
-                    let padding = vaddr - start_page;
-                    if padding < dest_slice.len() {
-                        let actual_copy = min(file_size, dest_slice.len() - padding);
-                        dest_slice[padding..padding + actual_copy]
-                            .copy_from_slice(&elf_data[offset..offset + actual_copy]);
-                    }
-                    self.ctx.vspace_mgr.unmap_scratch(scratch_vaddr, num_pages)?;
-                }
-                PT_TLS => {
-                    _tls = Some(TLS {
-                        master_vaddr: vaddr,
-                        mem_size: mem_size,
-                        align: align,
-                        file_size: file_size,
-                    });
-                }
-                _ => {}
-            }
-        }
-
-        unsafe {
-            core::arch::asm!("fence.i");
-        }
-
-        let ep = elf.entry_point();
-        let heap = align_up(max_vaddr, PGSIZE);
-        log!("Image loaded with entry_point: {:#x}, heap: {:#x}", ep, heap);
-        Ok((ep, heap))
     }
 
     fn kill(&mut self, _pid: Badge, _target: usize) -> Result<(), Error> {

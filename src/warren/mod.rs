@@ -6,25 +6,29 @@ mod resource;
 mod server;
 mod thread;
 
-pub use data::*;
-pub use thread::TLS;
-
+use crate::elf::ElfFile;
+use crate::elf::{PF_W, PF_X, PT_LOAD, PT_TLS};
 use crate::layout::{
     BOOTINFO_SLOT, IRQ_SLOT, MMIO_SLOT, SCRATCH_SIZE, SCRATCH_VA, STACK_SIZE, UNTYPED_SLOT,
 };
+use crate::log;
 use crate::warren::resource::ResourceRegistry;
 use alloc::collections::{BTreeMap, VecDeque};
 use alloc::string::ToString;
+use core::cmp::min;
+pub use data::*;
 use glenda::arch::mem::{KSTACK_PAGES, PGSIZE};
 use glenda::cap::{CNode, CapPtr, CapType, Endpoint, Frame, Reply, Rights, TCB, VSpace};
 use glenda::cap::{CSPACE_SLOT, KERNEL_SLOT, MONITOR_SLOT, TCB_SLOT, VSPACE_SLOT};
 use glenda::error::Error;
 use glenda::ipc::{Badge, IpcRouter};
-use glenda::mem::{ENTRY_VA, HEAP_PAGES, HEAP_SIZE, HEAP_VA, STACK_BASE};
+use glenda::mem::{ENTRY_VA, HEAP_SIZE, HEAP_VA, STACK_BASE};
 use glenda::mem::{Perms, get_trapframe_va, get_utcb_va};
+use glenda::utils::align::align_up;
 use glenda::utils::initrd::Initrd;
 use glenda::utils::manager::{CSpaceManager, UntypedManager, VSpaceManager};
 use glenda::utils::manager::{CSpaceService, UntypedService, VSpaceService};
+pub use thread::TLS;
 
 const SERVICE_PRIORITY: u8 = 252;
 
@@ -156,7 +160,7 @@ impl<'a> WarrenManager<'a> {
 
         let heap_slot = self.ctx.cspace_mgr.alloc(self.ctx.untyped_mgr)?;
         let full_heap_dest = CapPtr::concat(self.ctx.root_cnode.cap(), heap_slot);
-        self.ctx.untyped_mgr.alloc(CapType::Frame, HEAP_PAGES, full_heap_dest)?;
+        self.ctx.untyped_mgr.alloc(CapType::Frame, 1, full_heap_dest)?;
         let child_heap = Frame::from(heap_slot);
 
         child_cnode.copy(child_pd.cap(), VSPACE_SLOT, Rights::ALL)?;
@@ -202,7 +206,7 @@ impl<'a> WarrenManager<'a> {
             child_heap,
             HEAP_VA,
             Perms::READ | Perms::WRITE | Perms::USER,
-            HEAP_PAGES,
+            1,
             self.ctx.untyped_mgr,
             self.ctx.cspace_mgr,
             self.ctx.root_cnode,
@@ -221,7 +225,7 @@ impl<'a> WarrenManager<'a> {
             STACK_BASE, // passed to new and used for thread 0
         );
         process.heap_start = HEAP_VA;
-        process.heap_brk = HEAP_VA + HEAP_SIZE;
+        process.heap_brk = HEAP_VA + PGSIZE;
         {
             let thread = process.threads.get_mut(&0).unwrap();
             thread.stack_pages = 1;
@@ -237,5 +241,106 @@ impl<'a> WarrenManager<'a> {
         process.allocated_slots.push(ep_slot);
         process.allocated_slots.push(heap_slot);
         Ok(process)
+    }
+    fn load_elf(&mut self, pid: Badge, elf_data: &[u8]) -> Result<(usize, usize), Error> {
+        let elf = ElfFile::new(elf_data).map_err(|_| Error::InvalidArgs)?;
+        let mut max_vaddr = 0;
+        let process = self.processes.get_mut(&pid).ok_or(Error::NotFound)?;
+        let root_cnode = self.ctx.root_cnode;
+        let mut _tls = None;
+        for phdr in elf.program_headers() {
+            let type_ = phdr.p_type as usize;
+            let vaddr = phdr.p_vaddr as usize;
+            let mem_size = phdr.p_memsz as usize;
+            let file_size = phdr.p_filesz as usize;
+            let offset = phdr.p_offset as usize;
+            let align = phdr.p_align as usize;
+
+            if vaddr + mem_size > max_vaddr {
+                max_vaddr = vaddr + mem_size;
+            }
+            let mut perms = Perms::USER | Perms::READ;
+            if phdr.p_flags & PF_W != 0 {
+                perms |= Perms::WRITE;
+            }
+            if phdr.p_flags & PF_X != 0 {
+                perms |= Perms::EXECUTE;
+            }
+
+            log!(
+                "Loading segment: type={:#x}, vaddr={:#x}, mem_size={:#x}, file_size={:#x}, perms={:?}",
+                type_,
+                vaddr,
+                mem_size,
+                file_size,
+                perms
+            );
+            match phdr.p_type {
+                PT_LOAD => {
+                    let start_page = vaddr & !(PGSIZE - 1);
+                    let end_page = (vaddr + mem_size + PGSIZE - 1) & !(PGSIZE - 1);
+                    let num_pages = (end_page - start_page) / PGSIZE;
+
+                    let frame_cap = self.ctx.cspace_mgr.alloc(self.ctx.untyped_mgr)?;
+                    self.ctx.untyped_mgr.alloc(
+                        CapType::Frame,
+                        num_pages,
+                        CapPtr::concat(root_cnode.cap(), frame_cap),
+                    )?;
+                    let frame = Frame::from(frame_cap);
+
+                    process.vspace_mgr.map_frame(
+                        frame,
+                        start_page,
+                        perms,
+                        num_pages,
+                        self.ctx.untyped_mgr,
+                        self.ctx.cspace_mgr,
+                        root_cnode,
+                    )?;
+                    let scratch_slot = self.ctx.cspace_mgr.alloc(self.ctx.untyped_mgr)?;
+                    self.ctx.root_cnode.copy(frame_cap, scratch_slot, Rights::ALL)?;
+                    let scratch_frame = Frame::from(scratch_slot);
+
+                    let scratch_vaddr = self.ctx.vspace_mgr.map_scratch(
+                        scratch_frame,
+                        Perms::READ | Perms::WRITE | Perms::USER,
+                        num_pages,
+                        self.ctx.untyped_mgr,
+                        self.ctx.cspace_mgr,
+                        root_cnode,
+                    )?;
+
+                    let dest_slice = unsafe {
+                        core::slice::from_raw_parts_mut(
+                            scratch_vaddr as *mut u8,
+                            num_pages * PGSIZE,
+                        )
+                    };
+                    dest_slice.fill(0);
+                    let padding = vaddr - start_page;
+                    if padding < dest_slice.len() {
+                        let actual_copy = min(file_size, dest_slice.len() - padding);
+                        dest_slice[padding..padding + actual_copy]
+                            .copy_from_slice(&elf_data[offset..offset + actual_copy]);
+                    }
+                    self.ctx.vspace_mgr.unmap_scratch(scratch_vaddr, num_pages)?;
+                }
+                PT_TLS => {
+                    _tls = Some(TLS {
+                        master_vaddr: vaddr,
+                        mem_size: mem_size,
+                        align: align,
+                        file_size: file_size,
+                    });
+                }
+                _ => {}
+            }
+        }
+
+        let ep = elf.entry_point();
+        let heap = align_up(max_vaddr, PGSIZE);
+        log!("Image loaded with entry_point: {:#x}, heap: {:#x}", ep, heap);
+        Ok((ep, heap))
     }
 }

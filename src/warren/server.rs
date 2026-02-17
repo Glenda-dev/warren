@@ -80,8 +80,8 @@ impl<'a> SystemService for WarrenManager<'a> {
                 handle_call(u, |u| s.exit(pid, u.get_mr(0)))
             },
             (protocol::PROCESS_PROTO, protocol::process::EXEC) => |s: &mut Self, u: &mut UTCB| {
-                    let elf_data = unsafe { core::slice::from_raw_parts(u.get_mr(0) as *const u8, u.get_mr(1)) };
-                    handle_call(u, |_| s.exec(pid, elf_data))
+                let path = unsafe {u.read_str()?};
+                handle_call(u, |_| s.exec(pid, &path))
             },
             (protocol::PROCESS_PROTO, protocol::process::THREAD_CREATE) => |s: &mut Self, u: &mut UTCB| {
                 handle_call(u, |u| s.thread_create(pid, u.get_mr(0), u.get_mr(1), u.get_mr(2), u.get_mr(3)))
