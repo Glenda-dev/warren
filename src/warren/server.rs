@@ -5,7 +5,7 @@ use glenda::cap::MONITOR_SLOT;
 use glenda::cap::{CapPtr, CapType, Endpoint, Frame, Reply};
 use glenda::error::Error;
 use glenda::interface::{
-    FaultService, MemoryService, ProcessService, ResourceService, SystemService,
+    FaultService, MemoryService, ProcessService, ResourceService, SystemService, ThreadService,
 };
 use glenda::ipc::server::{handle_call, handle_cap_call};
 use glenda::ipc::{Badge, MsgTag, UTCB};
@@ -62,6 +62,7 @@ impl<'a> SystemService for WarrenManager<'a> {
     }
     fn dispatch(&mut self, utcb: &mut UTCB) -> Result<(), Error> {
         let badge = utcb.get_badge();
+        let pid = Badge::new(badge.bits() >> 16);
         let tag = utcb.get_msg_tag();
         let label = tag.label();
         let mrs = utcb.get_mrs();
@@ -70,28 +71,31 @@ impl<'a> SystemService for WarrenManager<'a> {
             self, utcb,
             (protocol::PROCESS_PROTO, protocol::process::SPAWN) => |s: &mut Self, u: &mut UTCB| {
                 let name = unsafe {u.read_str()?};
-                handle_call(u, |_| s.spawn(badge, &name))
+                handle_call(u, |_| s.spawn(pid, &name))
             },
             (protocol::PROCESS_PROTO, protocol::process::FORK) => |s: &mut Self, u: &mut UTCB| {
-                handle_call(u, |_| s.fork(badge))
+                handle_call(u, |_| s.fork(pid))
             },
             (protocol::PROCESS_PROTO, protocol::process::EXIT) => |s: &mut Self, u: &mut UTCB| {
-                handle_call(u, |u| s.exit(badge, u.get_mr(0)))
+                handle_call(u, |u| s.exit(pid, u.get_mr(0)))
             },
             (protocol::PROCESS_PROTO, protocol::process::EXEC) => |s: &mut Self, u: &mut UTCB| {
                     let elf_data = unsafe { core::slice::from_raw_parts(u.get_mr(0) as *const u8, u.get_mr(1)) };
-                    handle_call(u, |_| s.exec(badge, elf_data))
+                    handle_call(u, |_| s.exec(pid, elf_data))
+            },
+            (protocol::PROCESS_PROTO, protocol::process::THREAD_CREATE) => |s: &mut Self, u: &mut UTCB| {
+                handle_call(u, |u| s.thread_create(pid, u.get_mr(0), u.get_mr(1), u.get_mr(2), u.get_mr(3)))
             },
             (protocol::PROCESS_PROTO, protocol::process::GET_CNODE) => |s: &mut Self, u: &mut UTCB| {
-                handle_cap_call(u, |u| s.get_cnode(badge, Badge::new(u.get_mr(0)), CapPtr::null()).map(|c| c.cap()))
+                handle_cap_call(u, |u| s.get_cnode(pid, Badge::new(u.get_mr(0)), CapPtr::null()).map(|c| c.cap()))
             },
 
             (protocol::RESOURCE_PROTO, protocol::resource::ALLOC) => |s: &mut Self, u: &mut UTCB| {
-                handle_cap_call(u, |u| s.alloc(badge, CapType::from(u.get_mr(0)), u.get_mr(1), CapPtr::null())
+                handle_cap_call(u, |u| s.alloc(pid, CapType::from(u.get_mr(0)), u.get_mr(1), CapPtr::null())
                 )
             },
             (protocol::RESOURCE_PROTO, protocol::resource::DMA_ALLOC) => |s: &mut Self, u: &mut UTCB| {
-                handle_cap_call(u, |u| s.dma_alloc(badge, u.get_mr(0), CapPtr::null()).map(
+                handle_cap_call(u, |u| s.dma_alloc(pid, u.get_mr(0), CapPtr::null()).map(
                     |(paddr, frame)|{
                         u.set_mr(0, paddr);
                         frame.cap()
@@ -99,29 +103,29 @@ impl<'a> SystemService for WarrenManager<'a> {
                 )
             },
             (protocol::RESOURCE_PROTO, protocol::resource::FREE) => |s: &mut Self, u: &mut UTCB| {
-                handle_call(u, |u| s.free(badge, CapPtr::from(u.get_mr(0))))
+                handle_call(u, |u| s.free(pid, CapPtr::from(u.get_mr(0))))
             },
             (protocol::RESOURCE_PROTO, protocol::resource::SBRK) => |s: &mut Self, u: &mut UTCB| {
-                handle_call(u, |u| s.brk(badge, u.get_mr(0) as isize))
+                handle_call(u, |u| s.brk(pid, u.get_mr(0) as isize))
             },
             (protocol::RESOURCE_PROTO, protocol::resource::MMAP) => |s: &mut Self, u: &mut UTCB| {
                 handle_call(u, |u| {
                     let frame = Frame::from(s.recv);
                     let addr = u.get_mr(1);
                     let len = u.get_mr(2);
-                    s.mmap(badge, frame, addr, len)?;
+                    s.mmap(pid, frame, addr, len)?;
                     s.ctx.root_cnode.delete(s.recv)
                 })
             },
             (protocol::RESOURCE_PROTO, protocol::resource::MUNMAP) => |s: &mut Self, u: &mut UTCB| {
-                handle_call(u, |u| s.munmap(badge, u.get_mr(0), u.get_mr(1)))
+                handle_call(u, |u| s.munmap(pid, u.get_mr(0), u.get_mr(1)))
             },
             (protocol::RESOURCE_PROTO, protocol::resource::GET_CAP) => |s: &mut Self, u: &mut UTCB| {
                  handle_cap_call(u, |u| {
                      let captype_num = u.get_mr(0);
                      let captype = ResourceType::from(captype_num);
                      let id = u.get_mr(1);
-                     s.get_cap(badge, captype, id, CapPtr::null())
+                     s.get_cap(pid, captype, id, CapPtr::null())
                  })
             },
             (protocol::RESOURCE_PROTO, protocol::resource::REGISTER_CAP) => |s: &mut Self, u: &mut UTCB| {
@@ -130,20 +134,20 @@ impl<'a> SystemService for WarrenManager<'a> {
                     let captype = ResourceType::from(captype_num);
                     let id = u.get_mr(1);
                     let cap = s.recv;
-                    s.register_cap(badge, captype, id, cap)
+                    s.register_cap(pid, captype, id, cap)
                 })
             },
             (protocol::RESOURCE_PROTO, protocol::resource::GET_CONFIG) => |s: &mut Self, u: &mut UTCB| {
                 handle_cap_call(u, |u| {
                     let name = unsafe {u.read_str()?};
-                    let (frame, len) = s.get_config(badge, &name, CapPtr::null())?;
+                    let (frame, len) = s.get_config(pid, &name, CapPtr::null())?;
                     u.set_mr(0, len);
                     Ok(frame.cap())
                 })
             },
             (protocol::KERNEL_PROTO, _) => |s: &mut Self, u: &mut UTCB| {
                 let res = match label {
-                    protocol::kernel::SYSCALL => s.syscall(badge, u),
+                    protocol::kernel::SYSCALL => s.handle_syscall(badge.bits(), u.get_mrs()),
                     protocol::kernel::PAGE_FAULT => s.page_fault(badge, mrs[0], mrs[1], mrs[2]),
                     protocol::kernel::ILLEGAL_INSTRUCTION => {
                         s.illegal_instrution(badge, mrs[0], mrs[1])

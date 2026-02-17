@@ -12,7 +12,7 @@ use glenda::error::Error;
 use glenda::interface::ProcessService;
 use glenda::ipc::Badge;
 use glenda::mem::Perms;
-use glenda::mem::{STACK_VA, TRAPFRAME_VA, UTCB_VA};
+use glenda::mem::{STACK_BASE, get_trapframe_va, get_utcb_va};
 use glenda::utils::align::align_up;
 use glenda::utils::manager::VSpaceManager;
 use glenda::utils::manager::{CSpaceService, UntypedService, VSpaceService};
@@ -30,9 +30,11 @@ impl<'a> ProcessService for WarrenManager<'a> {
         match self.exec(pid, &file) {
             Ok((entry, _heap)) => {
                 let process = self.processes.get_mut(&pid).unwrap();
-                process.tcb.set_entrypoint(entry, STACK_VA, 0)?;
-                process.tcb.set_priority(SERVICE_PRIORITY)?;
-                process.tcb.resume()?;
+                let thread = process.threads.get_mut(&0).unwrap();
+                thread.tcb.set_entrypoint(entry, STACK_BASE, 0)?;
+                thread.tcb.set_address(get_utcb_va(0), get_trapframe_va(0))?;
+                thread.tcb.set_priority(SERVICE_PRIORITY)?;
+                thread.tcb.resume()?;
                 Ok(pid.bits())
             }
             Err(e) => {
@@ -46,29 +48,50 @@ impl<'a> ProcessService for WarrenManager<'a> {
         log!("Forking process, parent_pid: {:?}", parent_pid);
         let (heap_start, heap_brk, name, stack_base, stack_pages) = {
             let p = self.processes.get(&parent_pid).ok_or(Error::NotFound)?;
-            (p.heap_start, p.heap_brk, p.name.clone(), p.stack_base, p.stack_pages)
+            let t = p.threads.get(&0).ok_or(Error::NotFound)?;
+            (p.heap_start, p.heap_brk, p.name.clone(), t.stack_base, t.stack_pages)
         };
 
         let pid = self.alloc_pid()?;
 
         let cnode_slot = self.ctx.cspace_mgr.alloc(self.ctx.untyped_mgr)?;
-        self.ctx.untyped_mgr.alloc(CapType::CNode, 0, CapPtr::concat(self.ctx.root_cnode.cap(), cnode_slot))?;
+        self.ctx.untyped_mgr.alloc(
+            CapType::CNode,
+            0,
+            CapPtr::concat(self.ctx.root_cnode.cap(), cnode_slot),
+        )?;
         let child_cnode = CNode::from(cnode_slot);
 
         let pd_slot = self.ctx.cspace_mgr.alloc(self.ctx.untyped_mgr)?;
-        self.ctx.untyped_mgr.alloc(CapType::VSpace, 0, CapPtr::concat(self.ctx.root_cnode.cap(), pd_slot))?;
+        self.ctx.untyped_mgr.alloc(
+            CapType::VSpace,
+            0,
+            CapPtr::concat(self.ctx.root_cnode.cap(), pd_slot),
+        )?;
         let child_pd = VSpace::from(pd_slot);
 
         let tcb_slot = self.ctx.cspace_mgr.alloc(self.ctx.untyped_mgr)?;
-        self.ctx.untyped_mgr.alloc(CapType::TCB, 0, CapPtr::concat(self.ctx.root_cnode.cap(), tcb_slot))?;
+        self.ctx.untyped_mgr.alloc(
+            CapType::TCB,
+            0,
+            CapPtr::concat(self.ctx.root_cnode.cap(), tcb_slot),
+        )?;
         let child_tcb = TCB::from(tcb_slot);
 
         let utcb_slot = self.ctx.cspace_mgr.alloc(self.ctx.untyped_mgr)?;
-        self.ctx.untyped_mgr.alloc(CapType::Frame, 1, CapPtr::concat(self.ctx.root_cnode.cap(), utcb_slot))?;
+        self.ctx.untyped_mgr.alloc(
+            CapType::Frame,
+            1,
+            CapPtr::concat(self.ctx.root_cnode.cap(), utcb_slot),
+        )?;
         let child_utcb = Frame::from(utcb_slot);
 
         let trapframe_slot = self.ctx.cspace_mgr.alloc(self.ctx.untyped_mgr)?;
-        self.ctx.untyped_mgr.alloc(CapType::Frame, 1, CapPtr::concat(self.ctx.root_cnode.cap(), trapframe_slot))?;
+        self.ctx.untyped_mgr.alloc(
+            CapType::Frame,
+            1,
+            CapPtr::concat(self.ctx.root_cnode.cap(), trapframe_slot),
+        )?;
         let child_trapframe = Frame::from(trapframe_slot);
 
         let kstack_slot = self.ctx.cspace_mgr.alloc(self.ctx.untyped_mgr)?;
@@ -100,7 +123,7 @@ impl<'a> ProcessService for WarrenManager<'a> {
 
         child_vspace_mgr.map_frame(
             child_utcb,
-            UTCB_VA,
+            get_utcb_va(0),
             Perms::READ | Perms::WRITE | Perms::USER,
             1,
             self.ctx.untyped_mgr,
@@ -109,7 +132,7 @@ impl<'a> ProcessService for WarrenManager<'a> {
         )?;
         child_vspace_mgr.map_frame(
             child_trapframe,
-            TRAPFRAME_VA,
+            get_trapframe_va(0),
             Perms::READ | Perms::WRITE,
             1,
             self.ctx.untyped_mgr,
@@ -117,7 +140,8 @@ impl<'a> ProcessService for WarrenManager<'a> {
             root_cnode,
         )?;
 
-        child_cnode.mint(self.endpoint.cap(), MONITOR_SLOT, pid, Rights::ALL)?;
+        let badge = Badge::new(pid.bits() << 16);
+        child_cnode.mint(self.endpoint.cap(), MONITOR_SLOT, badge, Rights::ALL)?;
         child_tcb.configure(child_cnode, child_pd, child_utcb, child_trapframe, child_kstack)?;
 
         let mut process = Process::new(
@@ -133,7 +157,10 @@ impl<'a> ProcessService for WarrenManager<'a> {
         );
         process.heap_start = heap_start;
         process.heap_brk = heap_brk;
-        process.stack_pages = stack_pages;
+        {
+            let thread = process.threads.get_mut(&0).unwrap();
+            thread.stack_pages = stack_pages;
+        }
 
         self.processes.insert(pid, process);
         log!("Process forked: parent_pid: {:?}, child_pid: {:?}", parent_pid, pid);
@@ -144,7 +171,9 @@ impl<'a> ProcessService for WarrenManager<'a> {
         if let Some(mut p) = self.processes.remove(&pid) {
             p.exit_code = code;
             p.state = ProcessState::Dead;
-            p.tcb.suspend()?;
+            for (_, thread) in p.threads.iter() {
+                thread.tcb.suspend()?;
+            }
             log!("Process exited with pid: {:?}, code={}", pid, code);
         } else {
             log!("Failed to find process with pid: {:?}", pid);
@@ -215,7 +244,11 @@ impl<'a> ProcessService for WarrenManager<'a> {
                     let num_pages = (end_page - start_page) / PGSIZE;
 
                     let frame_cap = self.ctx.cspace_mgr.alloc(self.ctx.untyped_mgr)?;
-                    self.ctx.untyped_mgr.alloc(CapType::Frame, num_pages, CapPtr::concat(root_cnode.cap(), frame_cap))?;
+                    self.ctx.untyped_mgr.alloc(
+                        CapType::Frame,
+                        num_pages,
+                        CapPtr::concat(root_cnode.cap(), frame_cap),
+                    )?;
                     let frame = Frame::from(frame_cap);
 
                     process.vspace_mgr.map_frame(

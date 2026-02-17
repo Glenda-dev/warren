@@ -9,7 +9,9 @@ mod thread;
 pub use data::*;
 pub use thread::TLS;
 
-use crate::layout::{BOOTINFO_SLOT, IRQ_SLOT, MMIO_SLOT, STACK_SIZE, UNTYPED_SLOT};
+use crate::layout::{
+    BOOTINFO_SLOT, IRQ_SLOT, MMIO_SLOT, SCRATCH_SIZE, SCRATCH_VA, STACK_SIZE, UNTYPED_SLOT,
+};
 use crate::warren::resource::ResourceRegistry;
 use alloc::collections::{BTreeMap, VecDeque};
 use alloc::string::ToString;
@@ -18,8 +20,8 @@ use glenda::cap::{CNode, CapPtr, CapType, Endpoint, Frame, Reply, Rights, TCB, V
 use glenda::cap::{CSPACE_SLOT, KERNEL_SLOT, MONITOR_SLOT, TCB_SLOT, VSPACE_SLOT};
 use glenda::error::Error;
 use glenda::ipc::{Badge, IpcRouter};
-use glenda::mem::Perms;
-use glenda::mem::{ENTRY_VA, HEAP_PAGES, HEAP_SIZE, HEAP_VA, STACK_VA, TRAPFRAME_VA, UTCB_VA};
+use glenda::mem::{ENTRY_VA, HEAP_PAGES, HEAP_SIZE, HEAP_VA, STACK_BASE};
+use glenda::mem::{Perms, get_trapframe_va, get_utcb_va};
 use glenda::utils::initrd::Initrd;
 use glenda::utils::manager::{CSpaceManager, UntypedManager, VSpaceManager};
 use glenda::utils::manager::{CSpaceService, UntypedService, VSpaceService};
@@ -69,13 +71,15 @@ impl<'a> WarrenManager<'a> {
         // 1. Text/Data - Low mem 0x10000+
         vspace_mgr.mark_existing(ENTRY_VA, PGSIZE);
         // 2. Stack - High mem
-        vspace_mgr.mark_existing(STACK_VA, STACK_SIZE);
+        // STACK_BASE is the top address (TRAMPOLINE_VA)
+        // Stack grows down, range: [STACK_BASE - STACK_SIZE, STACK_BASE)
+        vspace_mgr.mark_existing(STACK_BASE - STACK_SIZE, STACK_SIZE);
         // 3. Heap
         vspace_mgr.mark_existing(HEAP_VA, HEAP_SIZE);
         // 4. UTCB
-        vspace_mgr.mark_existing(UTCB_VA, PGSIZE);
+        vspace_mgr.mark_existing(get_utcb_va(0), PGSIZE);
         // 5. TrapFrame
-        vspace_mgr.mark_existing(TRAPFRAME_VA, PGSIZE);
+        vspace_mgr.mark_existing(get_trapframe_va(0), PGSIZE);
 
         Self {
             processes: BTreeMap::new(),
@@ -106,8 +110,13 @@ impl<'a> WarrenManager<'a> {
     fn create(&mut self, name: &str) -> Result<Process, Error> {
         let pid = self.alloc_pid()?;
 
+        let utcb_va = get_utcb_va(0);
+        let trapframe_va = get_trapframe_va(0);
+
         let ep_slot = self.ctx.cspace_mgr.alloc(self.ctx.untyped_mgr)?;
-        self.ctx.root_cnode.mint(self.endpoint.cap(), ep_slot, pid, Rights::ALL)?;
+        // Use pid << 16 | tid (0) for the main thread badge
+        let badge = Badge::new(pid.bits() << 16);
+        self.ctx.root_cnode.mint(self.endpoint.cap(), ep_slot, badge, Rights::ALL)?;
         let child_endpoint = Endpoint::from(ep_slot);
 
         let cnode_slot = self.ctx.cspace_mgr.alloc(self.ctx.untyped_mgr)?;
@@ -157,14 +166,14 @@ impl<'a> WarrenManager<'a> {
 
         // Child process vspace manager doesn't use scratch area from self, or we can give it one?
         // For now, pass 0 size to indicate no scratch area.
-        let mut vspace_mgr = VSpaceManager::new(child_pd, 0, 0);
+        let mut vspace_mgr = VSpaceManager::new(child_pd, SCRATCH_VA, SCRATCH_SIZE);
         child_tcb.configure(child_cnode, child_pd, child_utcb, child_trapframe, child_kstack)?;
         // Enable fault handler with badge=pid
         child_tcb.set_fault_handler(child_endpoint, true)?;
-
+        child_tcb.set_address(utcb_va, trapframe_va)?;
         vspace_mgr.map_frame(
             child_utcb,
-            UTCB_VA,
+            utcb_va,
             Perms::READ | Perms::WRITE | Perms::USER,
             1,
             self.ctx.untyped_mgr,
@@ -173,7 +182,7 @@ impl<'a> WarrenManager<'a> {
         )?;
         vspace_mgr.map_frame(
             child_trapframe,
-            TRAPFRAME_VA,
+            trapframe_va,
             Perms::READ | Perms::WRITE,
             1,
             self.ctx.untyped_mgr,
@@ -182,7 +191,7 @@ impl<'a> WarrenManager<'a> {
         )?;
         vspace_mgr.map_frame(
             child_stack,
-            STACK_VA - PGSIZE,
+            STACK_BASE - PGSIZE,
             Perms::READ | Perms::WRITE | Perms::USER,
             1,
             self.ctx.untyped_mgr,
@@ -204,24 +213,28 @@ impl<'a> WarrenManager<'a> {
             pid,
             Badge::null(),
             name.to_string(),
-            child_tcb,
+            child_tcb, // passed to new and used for thread 0
             child_pd,
             child_cnode,
-            child_utcb,
+            child_utcb, // passed to new and used for thread 0
             vspace_mgr,
-            STACK_VA,
+            STACK_BASE, // passed to new and used for thread 0
         );
-        process.stack_pages = 1;
         process.heap_start = HEAP_VA;
         process.heap_brk = HEAP_VA + HEAP_SIZE;
+        {
+            let thread = process.threads.get_mut(&0).unwrap();
+            thread.stack_pages = 1;
+            thread.allocated_slots.push(tcb_slot);
+            thread.allocated_slots.push(utcb_slot);
+            thread.allocated_slots.push(trapframe_slot);
+            thread.allocated_slots.push(kstack_slot);
+            thread.allocated_slots.push(stack_slot);
+        }
+
         process.allocated_slots.push(cnode_slot);
         process.allocated_slots.push(pd_slot);
-        process.allocated_slots.push(tcb_slot);
-        process.allocated_slots.push(utcb_slot);
-        process.allocated_slots.push(trapframe_slot);
-        process.allocated_slots.push(kstack_slot);
         process.allocated_slots.push(ep_slot);
-        process.allocated_slots.push(stack_slot);
         process.allocated_slots.push(heap_slot);
         Ok(process)
     }
