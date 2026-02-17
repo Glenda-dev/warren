@@ -7,7 +7,7 @@ use glenda::error::Error;
 use glenda::interface::{
     FaultService, MemoryService, ProcessService, ResourceService, SystemService, ThreadService,
 };
-use glenda::ipc::server::{handle_call, handle_cap_call};
+use glenda::ipc::server::{handle_call, handle_call_noreply, handle_cap_call};
 use glenda::ipc::{Badge, MsgTag, UTCB};
 use glenda::protocol;
 use glenda::protocol::resource::ResourceType;
@@ -67,6 +67,8 @@ impl<'a> SystemService for WarrenManager<'a> {
         let label = tag.label();
         let mrs = utcb.get_mrs();
 
+        self.refill_buddy();
+
         glenda::ipc_dispatch! {
             self, utcb,
             (protocol::PROCESS_PROTO, protocol::process::SPAWN) => |s: &mut Self, u: &mut UTCB| {
@@ -77,7 +79,7 @@ impl<'a> SystemService for WarrenManager<'a> {
                 handle_call(u, |_| s.fork(pid))
             },
             (protocol::PROCESS_PROTO, protocol::process::EXIT) => |s: &mut Self, u: &mut UTCB| {
-                handle_call(u, |u| s.exit(pid, u.get_mr(0)))
+                handle_call_noreply(u, |u| s.exit(pid, u.get_mr(0))) // Avoid reply since process is exiting, but indicate success to caller
             },
             (protocol::PROCESS_PROTO, protocol::process::EXEC) => |s: &mut Self, u: &mut UTCB| {
                 let path = unsafe {u.read_str()?};

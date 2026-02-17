@@ -50,9 +50,9 @@ impl<'a> FaultService for WarrenManager<'a> {
         );
 
         // 1. Allocate Frame
-        let frame_slot = self.ctx.cspace_mgr.alloc(self.ctx.untyped_mgr)?;
+        let frame_slot = self.ctx.cspace_mgr.alloc(self.ctx.buddy)?;
 
-        self.ctx.untyped_mgr.alloc(
+        self.ctx.buddy.alloc(
             CapType::Frame,
             1,
             CapPtr::concat(self.ctx.root_cnode.cap(), frame_slot),
@@ -68,7 +68,7 @@ impl<'a> FaultService for WarrenManager<'a> {
             page_base,
             perms,
             1,
-            self.ctx.untyped_mgr,
+            self.ctx.buddy,
             self.ctx.cspace_mgr,
             self.ctx.root_cnode, // Using Warren's cnode for mapping bookkeeping
         )?;

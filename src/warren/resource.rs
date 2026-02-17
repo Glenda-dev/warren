@@ -59,7 +59,7 @@ impl<'a> ResourceService for WarrenManager<'a> {
             ResourceType::Kernel => self.res.kernel_cap,
             ResourceType::Untyped => self.res.untyped_cap,
             ResourceType::Irq => {
-                let slot = self.ctx.cspace_mgr.alloc(self.ctx.untyped_mgr)?;
+                let slot = self.ctx.cspace_mgr.alloc(self.ctx.buddy)?;
                 self.ctx.root_cnode.mint(self.res.irq_cap, slot, Badge::new(id), Rights::ALL)?;
                 let p = self.processes.get_mut(&pid).ok_or(Error::NotFound)?;
                 p.allocated_slots.push(slot);
@@ -70,7 +70,7 @@ impl<'a> ResourceService for WarrenManager<'a> {
             ResourceType::Endpoint => {
                 let p = self.processes.get_mut(&pid).ok_or(Error::NotFound)?;
                 let ep = self.res.endpoints.get(&id).ok_or(Error::NotFound)?;
-                let slot = self.ctx.cspace_mgr.alloc(self.ctx.untyped_mgr)?;
+                let slot = self.ctx.cspace_mgr.alloc(self.ctx.buddy)?;
                 self.ctx.root_cnode.mint(*ep, slot, pid, Rights::ALL)?;
                 p.allocated_slots.push(slot);
                 slot
@@ -88,7 +88,7 @@ impl<'a> ResourceService for WarrenManager<'a> {
         recv: CapPtr,
     ) -> Result<(), Error> {
         log!("register_cap: type={:?}, id={}", cap_type, id);
-        let slot = self.ctx.cspace_mgr.alloc(self.ctx.untyped_mgr)?;
+        let slot = self.ctx.cspace_mgr.alloc(self.ctx.buddy)?;
         self.ctx.root_cnode.move_cap(recv, slot)?;
         match cap_type {
             ResourceType::Endpoint => {
@@ -112,8 +112,8 @@ impl<'a> ResourceService for WarrenManager<'a> {
         let file = self.initrd.get_file(name).ok_or(Error::NotFound)?;
         let len = file.len();
         let pages = align_up(len, PGSIZE) / PGSIZE;
-        let slot = self.ctx.cspace_mgr.alloc(self.ctx.untyped_mgr)?;
-        self.ctx.untyped_mgr.alloc(
+        let slot = self.ctx.cspace_mgr.alloc(self.ctx.buddy)?;
+        self.ctx.buddy.alloc(
             CapType::Frame,
             pages,
             CapPtr::concat(self.ctx.root_cnode.cap(), slot),
@@ -123,7 +123,7 @@ impl<'a> ResourceService for WarrenManager<'a> {
             frame,
             Perms::READ | Perms::WRITE | Perms::USER,
             pages,
-            self.ctx.untyped_mgr,
+            self.ctx.buddy,
             self.ctx.cspace_mgr,
             self.ctx.root_cnode,
         )?;
@@ -146,8 +146,8 @@ impl<'a> WarrenManager<'a> {
     ) -> Result<(usize, CapPtr), Error> {
         log!("alloc: pid: {:?}, type={:?}, flags={:#x}", pid, obj_type, flags);
         let p = self.processes.get_mut(&pid).ok_or(Error::NotFound)?;
-        let slot = self.ctx.cspace_mgr.alloc(self.ctx.untyped_mgr)?;
-        let paddr = self.ctx.untyped_mgr.alloc(
+        let slot = self.ctx.cspace_mgr.alloc(self.ctx.buddy)?;
+        let paddr = self.ctx.buddy.alloc(
             obj_type,
             flags,
             CapPtr::concat(self.ctx.root_cnode.cap(), slot),

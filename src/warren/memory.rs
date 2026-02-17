@@ -28,8 +28,8 @@ impl<'a> MemoryService for WarrenManager<'a> {
             if end_map > start_map {
                 let pages = (end_map - start_map) / PGSIZE;
 
-                let slot = self.ctx.cspace_mgr.alloc(self.ctx.untyped_mgr)?;
-                self.ctx.untyped_mgr.alloc(
+                let slot = self.ctx.cspace_mgr.alloc(self.ctx.buddy)?;
+                self.ctx.buddy.alloc(
                     CapType::Frame,
                     pages,
                     CapPtr::concat(self.ctx.root_cnode.cap(), slot),
@@ -39,7 +39,7 @@ impl<'a> MemoryService for WarrenManager<'a> {
                     start_map,
                     Perms::READ | Perms::WRITE | Perms::USER,
                     pages,
-                    self.ctx.untyped_mgr,
+                    self.ctx.buddy,
                     self.ctx.cspace_mgr,
                     self.ctx.root_cnode,
                 )?;
@@ -61,7 +61,7 @@ impl<'a> MemoryService for WarrenManager<'a> {
             addr,
             Perms::READ | Perms::WRITE | Perms::USER,
             align_up(len, PGSIZE) / PGSIZE,
-            self.ctx.untyped_mgr,
+            self.ctx.buddy,
             self.ctx.cspace_mgr,
             cspace,
         )?;
@@ -77,7 +77,7 @@ impl<'a> MemoryService for WarrenManager<'a> {
         process.vspace_mgr.unmap(
             addr,
             (len + PGSIZE - 1) / PGSIZE,
-            self.ctx.untyped_mgr, // Use Warren's resource manager to free slots
+            self.ctx.buddy, // Use Warren's resource manager to free slots
             self.ctx.root_cnode,  // Process cnode where cap resides
         )
     }

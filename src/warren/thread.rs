@@ -77,32 +77,32 @@ impl<'a> ThreadService for WarrenManager<'a> {
         process.next_tid += 1;
 
         // Allocate slots
-        let tcb_slot = self.ctx.cspace_mgr.alloc(self.ctx.untyped_mgr)?;
-        self.ctx.untyped_mgr.alloc(
+        let tcb_slot = self.ctx.cspace_mgr.alloc(self.ctx.buddy)?;
+        self.ctx.buddy.alloc(
             CapType::TCB,
             0,
             CapPtr::concat(self.ctx.root_cnode.cap(), tcb_slot),
         )?;
         let tcb = TCB::from(tcb_slot);
 
-        let utcb_slot = self.ctx.cspace_mgr.alloc(self.ctx.untyped_mgr)?;
-        self.ctx.untyped_mgr.alloc(
+        let utcb_slot = self.ctx.cspace_mgr.alloc(self.ctx.buddy)?;
+        self.ctx.buddy.alloc(
             CapType::Frame,
             1,
             CapPtr::concat(self.ctx.root_cnode.cap(), utcb_slot),
         )?;
         let utcb_frame = Frame::from(utcb_slot);
 
-        let trapframe_slot = self.ctx.cspace_mgr.alloc(self.ctx.untyped_mgr)?;
-        self.ctx.untyped_mgr.alloc(
+        let trapframe_slot = self.ctx.cspace_mgr.alloc(self.ctx.buddy)?;
+        self.ctx.buddy.alloc(
             CapType::Frame,
             1,
             CapPtr::concat(self.ctx.root_cnode.cap(), trapframe_slot),
         )?;
         let trapframe = Frame::from(trapframe_slot);
 
-        let kstack_slot = self.ctx.cspace_mgr.alloc(self.ctx.untyped_mgr)?;
-        self.ctx.untyped_mgr.alloc(
+        let kstack_slot = self.ctx.cspace_mgr.alloc(self.ctx.buddy)?;
+        self.ctx.buddy.alloc(
             CapType::Frame,
             KSTACK_PAGES,
             CapPtr::concat(self.ctx.root_cnode.cap(), kstack_slot),
@@ -118,7 +118,7 @@ impl<'a> ThreadService for WarrenManager<'a> {
             utcb_vaddr,
             Perms::READ | Perms::WRITE | Perms::USER,
             1,
-            self.ctx.untyped_mgr,
+            self.ctx.buddy,
             self.ctx.cspace_mgr,
             self.ctx.root_cnode,
         )?;
@@ -127,12 +127,12 @@ impl<'a> ThreadService for WarrenManager<'a> {
             trapframe_vaddr,
             Perms::READ | Perms::WRITE,
             1,
-            self.ctx.untyped_mgr,
+            self.ctx.buddy,
             self.ctx.cspace_mgr,
             self.ctx.root_cnode,
         )?;
 
-        let faulthandler_slot = self.ctx.cspace_mgr.alloc(self.ctx.untyped_mgr)?;
+        let faulthandler_slot = self.ctx.cspace_mgr.alloc(self.ctx.buddy)?;
         let badge = Badge::new((pid.bits() << 16) | tid);
         self.ctx.root_cnode.mint(self.endpoint.cap(), faulthandler_slot, badge, Rights::ALL)?;
         let fault_ep = glenda::cap::Endpoint::from(faulthandler_slot);

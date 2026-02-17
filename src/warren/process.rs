@@ -1,6 +1,6 @@
-use super::{Process, ProcessState, WarrenManager};
+use super::{Process, WarrenManager};
 use crate::layout::SCRATCH_VA;
-use crate::log;
+use crate::{error, log};
 use glenda::arch::mem::{KSTACK_PAGES, PGSIZE};
 use glenda::cap::MONITOR_SLOT;
 use glenda::cap::{CNode, CapPtr, CapType, Frame, Rights, TCB, VSpace};
@@ -54,48 +54,48 @@ impl<'a> ProcessService for WarrenManager<'a> {
 
         let pid = self.alloc_pid()?;
 
-        let cnode_slot = self.ctx.cspace_mgr.alloc(self.ctx.untyped_mgr)?;
-        self.ctx.untyped_mgr.alloc(
+        let cnode_slot = self.ctx.cspace_mgr.alloc(self.ctx.buddy)?;
+        self.ctx.buddy.alloc(
             CapType::CNode,
             0,
             CapPtr::concat(self.ctx.root_cnode.cap(), cnode_slot),
         )?;
         let child_cnode = CNode::from(cnode_slot);
 
-        let pd_slot = self.ctx.cspace_mgr.alloc(self.ctx.untyped_mgr)?;
-        self.ctx.untyped_mgr.alloc(
+        let pd_slot = self.ctx.cspace_mgr.alloc(self.ctx.buddy)?;
+        self.ctx.buddy.alloc(
             CapType::VSpace,
             0,
             CapPtr::concat(self.ctx.root_cnode.cap(), pd_slot),
         )?;
         let child_pd = VSpace::from(pd_slot);
 
-        let tcb_slot = self.ctx.cspace_mgr.alloc(self.ctx.untyped_mgr)?;
-        self.ctx.untyped_mgr.alloc(
+        let tcb_slot = self.ctx.cspace_mgr.alloc(self.ctx.buddy)?;
+        self.ctx.buddy.alloc(
             CapType::TCB,
             0,
             CapPtr::concat(self.ctx.root_cnode.cap(), tcb_slot),
         )?;
         let child_tcb = TCB::from(tcb_slot);
 
-        let utcb_slot = self.ctx.cspace_mgr.alloc(self.ctx.untyped_mgr)?;
-        self.ctx.untyped_mgr.alloc(
+        let utcb_slot = self.ctx.cspace_mgr.alloc(self.ctx.buddy)?;
+        self.ctx.buddy.alloc(
             CapType::Frame,
             1,
             CapPtr::concat(self.ctx.root_cnode.cap(), utcb_slot),
         )?;
         let child_utcb = Frame::from(utcb_slot);
 
-        let trapframe_slot = self.ctx.cspace_mgr.alloc(self.ctx.untyped_mgr)?;
-        self.ctx.untyped_mgr.alloc(
+        let trapframe_slot = self.ctx.cspace_mgr.alloc(self.ctx.buddy)?;
+        self.ctx.buddy.alloc(
             CapType::Frame,
             1,
             CapPtr::concat(self.ctx.root_cnode.cap(), trapframe_slot),
         )?;
         let child_trapframe = Frame::from(trapframe_slot);
 
-        let kstack_slot = self.ctx.cspace_mgr.alloc(self.ctx.untyped_mgr)?;
-        self.ctx.untyped_mgr.alloc(
+        let kstack_slot = self.ctx.cspace_mgr.alloc(self.ctx.buddy)?;
+        self.ctx.buddy.alloc(
             CapType::Frame,
             KSTACK_PAGES,
             CapPtr::concat(self.ctx.root_cnode.cap(), kstack_slot),
@@ -112,7 +112,7 @@ impl<'a> ProcessService for WarrenManager<'a> {
             .vspace_mgr
             .clone_space(
                 &mut child_vspace_mgr,
-                self.ctx.untyped_mgr,
+                self.ctx.buddy,
                 self.ctx.cspace_mgr,
                 root_cnode,
                 SCRATCH_VA,
@@ -126,7 +126,7 @@ impl<'a> ProcessService for WarrenManager<'a> {
             get_utcb_va(0),
             Perms::READ | Perms::WRITE | Perms::USER,
             1,
-            self.ctx.untyped_mgr,
+            self.ctx.buddy,
             self.ctx.cspace_mgr,
             root_cnode,
         )?;
@@ -135,7 +135,7 @@ impl<'a> ProcessService for WarrenManager<'a> {
             get_trapframe_va(0),
             Perms::READ | Perms::WRITE,
             1,
-            self.ctx.untyped_mgr,
+            self.ctx.buddy,
             self.ctx.cspace_mgr,
             root_cnode,
         )?;
@@ -160,6 +160,15 @@ impl<'a> ProcessService for WarrenManager<'a> {
         {
             let thread = process.threads.get_mut(&0).unwrap();
             thread.stack_pages = stack_pages;
+            // Record allocated slots for main thread cleanup
+            thread.allocated_slots.push(tcb_slot);
+            thread.allocated_slots.push(utcb_slot);
+            thread.allocated_slots.push(trapframe_slot);
+            thread.allocated_slots.push(kstack_slot);
+
+            // Record process-level slots (CNode/VSpace) to process.allocated_slots
+            process.allocated_slots.push(cnode_slot);
+            process.allocated_slots.push(pd_slot);
         }
 
         self.processes.insert(pid, process);
@@ -168,15 +177,11 @@ impl<'a> ProcessService for WarrenManager<'a> {
     }
 
     fn exit(&mut self, pid: Badge, code: usize) -> Result<(), Error> {
-        if let Some(mut p) = self.processes.remove(&pid) {
-            p.exit_code = code;
-            p.state = ProcessState::Dead;
-            for (_, thread) in p.threads.iter() {
-                thread.tcb.suspend()?;
+        match self.exit_wrapper(pid, code) {
+            Ok(_) => {}
+            Err(e) => {
+                error!("Error during exit of pid {:?}: {:?}", pid, e);
             }
-            log!("Process exited with pid: {:?}, code={}", pid, code);
-        } else {
-            log!("Failed to find process with pid: {:?}", pid);
         }
         Ok(())
     }
@@ -203,7 +208,19 @@ impl<'a> ProcessService for WarrenManager<'a> {
         Ok(cnode)
     }
 
-    fn kill(&mut self, _pid: Badge, _target: usize) -> Result<(), Error> {
-        Err(Error::NotImplemented)
+    fn kill(&mut self, pid: Badge, target: usize) -> Result<(), Error> {
+        let target_badge = Badge::new(target);
+        if let Some(target_proc) = self.processes.get(&target_badge) {
+            // Allow self-kill or parent-kill
+            if target_proc.parent_pid != pid && pid != target_badge {
+                log!("Permission denied for kill: pid {:?} tried to kill target {:?}", pid, target);
+                return Err(Error::PermissionDenied);
+            }
+        } else {
+            return Err(Error::NotFound);
+        }
+
+        // At this point we drop the reference to target_proc so we can mutate self
+        self.exit(target_badge, 0)
     }
 }
