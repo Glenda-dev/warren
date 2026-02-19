@@ -70,7 +70,7 @@ fn main() -> usize {
     // let mut untyped_mgr = UntypedManager::new(bootinfo, UNTYPED_SLOT);
     let mut vspace_mgr = VSpaceManager::new(VSPACE_CAP, layout::SCRATCH_VA, layout::SCRATCH_SIZE);
     let mut cspace_mgr = CSpaceManager::new(CSPACE_CAP, 16);
-
+    log!("Initializing Buddy Allocator...");
     // Initialize Buddy Allocator
     let mut buddy_alloc = BuddyAllocator::new();
 

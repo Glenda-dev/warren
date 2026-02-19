@@ -34,7 +34,7 @@ impl<'a> FaultService for WarrenManager<'a> {
                 pc,
                 cause
             );
-            return self.exit(pid, 0x0b).map(|_| ());
+            return self.exit(pid, 0x0b);
         }
 
         let process = self.processes.get_mut(&pid).ok_or(Error::NotFound)?;

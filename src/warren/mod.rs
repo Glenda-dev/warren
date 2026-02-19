@@ -431,7 +431,6 @@ impl<'a> WarrenManager<'a> {
                 // Always free the slot from CSpaceManager to prevent leaks
                 self.ctx.cspace_mgr.free(*slot)?;
             }
-
             log!("Process exited: pid: {:?}, code={}", pid, code);
         } else {
             error!("Failed to find process with pid: {:?}", pid);
