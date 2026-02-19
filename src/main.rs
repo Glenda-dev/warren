@@ -53,7 +53,7 @@ fn main() -> usize {
     log!("{}", bootinfo);
 
     // Parse Initrd
-    let initrd_start = INITRD_VA + bootinfo.initrd_offset;
+    let initrd_start = INITRD_VA + bootinfo.initrd_paddr % PGSIZE;
     let initrd_size = bootinfo.initrd_size;
 
     // Safety check
