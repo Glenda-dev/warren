@@ -1,6 +1,5 @@
 use super::WarrenManager;
 use crate::layout::INIT_NAME;
-use crate::{error, log};
 use glenda::cap::MONITOR_SLOT;
 use glenda::cap::{CapPtr, CapType, Endpoint, Frame, Reply};
 use glenda::error::Error;

@@ -1,5 +1,4 @@
 use crate::WarrenManager;
-use crate::log;
 use alloc::collections::btree_map::BTreeMap;
 use glenda::arch::mem::PGSIZE;
 use glenda::cap::{CapPtr, CapType, Frame, Rights};

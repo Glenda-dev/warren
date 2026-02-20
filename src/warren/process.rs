@@ -1,6 +1,5 @@
 use super::{Process, WarrenManager};
 use crate::layout::SCRATCH_VA;
-use crate::{error, log};
 use glenda::arch::mem::{KSTACK_PAGES, PGSIZE};
 use glenda::cap::MONITOR_SLOT;
 use glenda::cap::{CNode, CapPtr, CapType, Frame, Rights, TCB, VSpace};

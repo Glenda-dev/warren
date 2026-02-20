@@ -2,13 +2,13 @@
 #![no_main]
 #![allow(dead_code)]
 
+#[macro_use]
+extern crate glenda;
 extern crate alloc;
-use glenda;
 
 mod elf;
 mod layout;
 mod warren;
-
 use crate::layout::UNTYPED_SLOT;
 use crate::warren::BuddyAllocator;
 use glenda::arch::mem::PGSIZE;
@@ -25,27 +25,9 @@ use glenda::utils::manager::{
 };
 use warren::WarrenManager;
 
-#[macro_export]
-macro_rules! log {
-    ($($arg:tt)*) => ({
-        glenda::println!("{}Warren: {}{}", glenda::console::ANSI_BLUE, format_args!($($arg)*), glenda::console::ANSI_RESET);
-    })
-}
-#[macro_export]
-macro_rules! warn {
-    ($($arg:tt)*) => ({
-        glenda::println!("{}Warren: {}{}", glenda::console::ANSI_YELLOW, format_args!($($arg)*), glenda::console::ANSI_RESET);
-    })
-}
-#[macro_export]
-macro_rules! error {
-    ($($arg:tt)*) => ({
-        glenda::println!("{}Warren: {}{}", glenda::console::ANSI_RED, format_args!($($arg)*), glenda::console::ANSI_RESET);
-    })
-}
-
 #[unsafe(no_mangle)]
 fn main() -> usize {
+    glenda::console::init_logging("Warren");
     log!("Starting Warren Manager...");
 
     // Parse BootInfo

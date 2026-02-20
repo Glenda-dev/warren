@@ -14,7 +14,6 @@ use crate::layout::{
     BOOTINFO_SLOT, IRQ_SLOT, MMIO_SLOT, SCRATCH_SIZE, SCRATCH_VA, STACK_SIZE, UNTYPED_SLOT,
 };
 use crate::warren::resource::ResourceRegistry;
-use crate::{error, log, warn};
 use alloc::collections::{BTreeMap, VecDeque};
 use alloc::string::ToString;
 use core::cmp::min;

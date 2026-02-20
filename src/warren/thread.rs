@@ -1,5 +1,4 @@
 use super::WarrenManager;
-use crate::log;
 use alloc::vec::Vec;
 use glenda::arch::mem::KSTACK_PAGES;
 use glenda::cap::{CapPtr, CapType, Frame, Rights, TCB};

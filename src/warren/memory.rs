@@ -1,5 +1,4 @@
 use super::WarrenManager;
-use crate::log;
 use glenda::arch::mem::PGSIZE;
 use glenda::cap::{CapPtr, CapType, Frame};
 use glenda::error::Error;
