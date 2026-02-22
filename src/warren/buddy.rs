@@ -11,21 +11,21 @@ const MAX_ORDER: usize = 30;
 const MIN_ORDER: usize = 12;
 
 pub struct BuddyAllocator {
-    // Stores Untyped capabilities of size 2^order
-    free_lists: [Vec<Untyped>; MAX_ORDER + 1],
+    // Stores (Untyped capability, physical address) of size 2^order
+    free_lists: [Vec<(Untyped, usize)>; MAX_ORDER + 1],
     // Reserve slots for splitting operations
     free_slots: Vec<CapPtr>,
 }
 
 impl BuddyAllocator {
     pub fn new() -> Self {
-        const EMPTY_VEC: Vec<Untyped> = Vec::new();
+        const EMPTY_VEC: Vec<(Untyped, usize)> = Vec::new();
         Self { free_lists: [EMPTY_VEC; MAX_ORDER + 1], free_slots: Vec::with_capacity(128) }
     }
 
-    pub fn add_block(&mut self, cap: Untyped, order: usize) {
+    pub fn add_block(&mut self, cap: Untyped, order: usize, paddr: usize) {
         if order <= MAX_ORDER && order >= MIN_ORDER {
-            self.free_lists[order].push(cap);
+            self.free_lists[order].push((cap, paddr));
         }
     }
 
@@ -37,23 +37,24 @@ impl BuddyAllocator {
         self.free_slots.len()
     }
 
-    // Internal alloc helper that returns the Untyped cap
-    fn alloc_untyped(&mut self, order: usize) -> Result<Untyped, Error> {
+    // Internal alloc helper that returns the Untyped cap and its physical address
+    fn alloc_untyped(&mut self, order: usize) -> Result<(Untyped, usize), Error> {
         let order = max(order, MIN_ORDER);
         if order > MAX_ORDER {
             return Err(Error::OutOfMemory);
         }
 
         // 1. Try exact match
-        if let Some(cap) = self.free_lists[order].pop() {
-            return Ok(cap);
+        if let Some((cap, paddr)) = self.free_lists[order].pop() {
+            return Ok((cap, paddr));
         }
 
         // 2. Find larger block to split
         for i in (order + 1)..=MAX_ORDER {
             if !self.free_lists[i].is_empty() {
-                let parent_cap = self.free_lists[i].pop().unwrap();
+                let (parent_cap, parent_paddr) = self.free_lists[i].pop().unwrap();
                 let mut current_cap = parent_cap;
+                let current_paddr = parent_paddr;
 
                 // Split from i down to order
                 for current_order in (order + 1..=i).rev() {
@@ -75,22 +76,24 @@ impl BuddyAllocator {
                     let child1 = Untyped::from(child1_slot);
                     let child2 = Untyped::from(child2_slot);
 
+                    let child_size = 1 << child_order;
+
                     // Keep child1 for next iteration (or return it if we are done)
                     // Put child2 into free list
-                    self.free_lists[child_order].push(child2);
+                    self.free_lists[child_order].push((child2, current_paddr + child_size));
 
                     current_cap = child1;
                 }
 
-                return Ok(current_cap);
+                return Ok((current_cap, current_paddr));
             }
         }
 
         Err(Error::OutOfMemory)
     }
 
-    pub fn free(&mut self, cap: Untyped, order: usize) {
-        self.add_block(cap, order);
+    pub fn free(&mut self, cap: Untyped, order: usize, paddr: usize) {
+        self.add_block(cap, order, paddr);
     }
 }
 
@@ -105,8 +108,7 @@ impl UntypedService for BuddyAllocator {
             _ => MIN_ORDER,
         };
 
-        let untyped = self.alloc_untyped(order)?;
-        let paddr = 0;
+        let (untyped, paddr) = self.alloc_untyped(order)?;
 
         match obj_type {
             CapType::Untyped => untyped.retype_untyped(flags, dest)?,
@@ -134,7 +136,7 @@ impl UntypedService for BuddyAllocator {
 impl CSpaceProvider for BuddyAllocator {
     fn alloc_cnode(&mut self, dest: CapPtr) -> Result<(), Error> {
         let order = (CNODE_PAGES * PGSIZE).ilog2() as usize;
-        let untyped = self.alloc_untyped(order)?;
+        let (untyped, _paddr) = self.alloc_untyped(order)?;
         untyped.retype_cnode(dest)?;
         Ok(())
     }

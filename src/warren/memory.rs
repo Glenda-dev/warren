@@ -52,9 +52,16 @@ impl<'a> MemoryService for WarrenManager<'a> {
 
     fn mmap(&mut self, pid: Badge, frame: Frame, addr: usize, len: usize) -> Result<usize, Error> {
         log!("mmap: pid: {:?}, frame={:?}, addr={:#x}, len={:#x}", pid, frame, addr, len);
+        if addr % PGSIZE != 0 || len == 0 {
+            return Err(Error::InvalidArgs);
+        }
         let process = self.processes.get_mut(&pid).ok_or(Error::NotFound)?;
         // Use Warren's root CNode for managing intermediate page tables
         let cspace = self.ctx.root_cnode;
+        // Check Range
+        if addr < 0x30000000 || addr >= 0x70000000 {
+            return Err(Error::PermissionDenied);
+        }
         process.vspace_mgr.map_frame(
             frame,
             addr,
@@ -76,8 +83,8 @@ impl<'a> MemoryService for WarrenManager<'a> {
         process.vspace_mgr.unmap(
             addr,
             (len + PGSIZE - 1) / PGSIZE,
-            self.ctx.buddy, // Use Warren's resource manager to free slots
-            self.ctx.root_cnode,  // Process cnode where cap resides
+            self.ctx.buddy,      // Use Warren's resource manager to free slots
+            self.ctx.root_cnode, // Process cnode where cap resides
         )
     }
 }

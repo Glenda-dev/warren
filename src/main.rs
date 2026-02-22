@@ -77,7 +77,8 @@ fn main() -> usize {
 
             if let Ok(slot) = cspace_mgr.alloc(&mut dummy) {
                 if original_cap.retype_untyped(block_pages, slot).is_ok() {
-                    buddy_alloc.add_block(Untyped::from(slot), order);
+                    buddy_alloc.add_block(Untyped::from(slot), order, desc.start);
+                    desc.start += block_pages * PGSIZE;
                     desc.pages -= block_pages;
                 } else {
                     break;

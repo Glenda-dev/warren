@@ -374,10 +374,10 @@ impl<'a> WarrenManager<'a> {
                 for slot in thread.allocated_slots.iter() {
                     self.ctx.root_cnode.revoke(*slot)?;
                     match self.ctx.root_cnode.recycle(*slot) {
-                        Ok(pages) => {
+                        Ok((paddr, pages)) => {
                             if pages > 0 {
                                 let order = (pages * PGSIZE).ilog2() as usize;
-                                self.ctx.buddy.add_block(Untyped::from(*slot), order);
+                                self.ctx.buddy.add_block(Untyped::from(*slot), order, paddr);
                             } else {
                                 match self.ctx.root_cnode.delete(*slot) {
                                     Ok(()) => {
@@ -414,10 +414,10 @@ impl<'a> WarrenManager<'a> {
             for slot in p.allocated_slots.iter() {
                 self.ctx.root_cnode.revoke(*slot)?;
                 match self.ctx.root_cnode.recycle(*slot) {
-                    Ok(pages) => {
+                    Ok((paddr, pages)) => {
                         if pages > 0 {
                             let order = (pages * PGSIZE).ilog2() as usize;
-                            self.ctx.buddy.add_block(Untyped::from(*slot), order);
+                            self.ctx.buddy.add_block(Untyped::from(*slot), order, paddr);
                         } else {
                             self.ctx.root_cnode.delete(*slot)?;
                         }

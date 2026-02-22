@@ -143,7 +143,6 @@ impl<'a> WarrenManager<'a> {
         obj_type: CapType,
         flags: usize,
     ) -> Result<(usize, CapPtr), Error> {
-        log!("alloc: pid: {:?}, type={:?}, flags={:#x}", pid, obj_type, flags);
         let p = self.processes.get_mut(&pid).ok_or(Error::NotFound)?;
         let slot = self.ctx.cspace_mgr.alloc(self.ctx.buddy)?;
         let paddr = self.ctx.buddy.alloc(
@@ -152,6 +151,7 @@ impl<'a> WarrenManager<'a> {
             CapPtr::concat(self.ctx.root_cnode.cap(), slot),
         )?;
         p.allocated_slots.push(slot);
+        log!("alloc: pid: {:?}, type={:?}, flags={:#x}, paddr={:#x}", pid, obj_type, flags, paddr);
         Ok((paddr, slot))
     }
 }

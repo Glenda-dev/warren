@@ -6,7 +6,7 @@ use glenda::error::Error;
 use glenda::interface::{
     FaultService, MemoryService, ProcessService, ResourceService, SystemService, ThreadService,
 };
-use glenda::ipc::server::{handle_call, handle_call_noreply, handle_cap_call};
+use glenda::ipc::server::{handle_call, handle_cap_call, handle_notify};
 use glenda::ipc::{Badge, MsgTag, UTCB};
 use glenda::protocol;
 use glenda::protocol::resource::ResourceType;
@@ -32,6 +32,7 @@ impl<'a> SystemService for WarrenManager<'a> {
         }
         self.running = true;
         while self.running {
+            self.refill_buddy();
             let mut utcb = unsafe { UTCB::new() };
             utcb.clear();
             utcb.set_reply_window(self.reply.cap());
@@ -51,12 +52,24 @@ impl<'a> SystemService for WarrenManager<'a> {
                         continue;
                     }
                     let badge = utcb.get_badge();
-                    error!("Failed to dispatch message for {}: {:?}", badge, e);
+                    let proto = utcb.get_msg_tag().proto();
+                    let label = utcb.get_msg_tag().label();
+                    error!(
+                        "Failed to dispatch message for {}: {:?}, proto={:#x}, label={:#x}",
+                        badge, e, proto, label
+                    );
                     utcb.set_msg_tag(MsgTag::err());
                     utcb.set_mr(0, e as usize);
                 }
             };
-            self.reply(&mut utcb)?;
+            if let Err(e) = self.reply(&mut utcb) {
+                // Ignore reply failures when the target process might have exited.
+                // However, we still log it if it's not a common "InvalidCapability" error.
+                if e != Error::InvalidCapability {
+                    let b = utcb.get_badge();
+                    error!("Process {} reply error: {:?}", b.bits() >> 16, e);
+                }
+            }
         }
         Ok(())
     }
@@ -66,8 +79,6 @@ impl<'a> SystemService for WarrenManager<'a> {
         let tag = utcb.get_msg_tag();
         let label = tag.label();
         let mrs = utcb.get_mrs();
-
-        self.refill_buddy();
 
         glenda::ipc_dispatch! {
             self, utcb,
@@ -79,7 +90,7 @@ impl<'a> SystemService for WarrenManager<'a> {
                 handle_call(u, |_| s.fork(pid))
             },
             (protocol::PROCESS_PROTO, protocol::process::EXIT) => |s: &mut Self, u: &mut UTCB| {
-                handle_call_noreply(u, |u| s.exit(pid, u.get_mr(0))) // Avoid reply since process is exiting, but indicate success to caller
+                handle_notify(u, |u| s.exit(pid, u.get_mr(0))) // Avoid reply since process is exiting, but indicate success to caller
             },
             (protocol::PROCESS_PROTO, protocol::process::EXEC) => |s: &mut Self, u: &mut UTCB| {
                 let path = unsafe {u.read_str()?};
@@ -113,8 +124,8 @@ impl<'a> SystemService for WarrenManager<'a> {
             (protocol::RESOURCE_PROTO, protocol::resource::MMAP) => |s: &mut Self, u: &mut UTCB| {
                 handle_call(u, |u| {
                     let frame = Frame::from(s.recv);
-                    let addr = u.get_mr(1);
-                    let len = u.get_mr(2);
+                    let addr = u.get_mr(0);
+                    let len = u.get_mr(1);
                     s.mmap(pid, frame, addr, len)?;
                     s.ctx.root_cnode.delete(s.recv)
                 })
