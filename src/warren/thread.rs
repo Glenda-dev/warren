@@ -147,7 +147,7 @@ impl<'a> ThreadService for WarrenManager<'a> {
         // Set argument (A0=arg, A1=tid)
         tcb.set_registers(&[arg, tid])?;
 
-        tcb.set_priority(SERVICE_PRIORITY)?;
+        tcb.set_priority(SERVICE_PRIORITY, 0)?;
         tcb.resume()?;
 
         let mut thread = Thread::new(tid, tcb, utcb_frame, stack_top, 0); // stack_pages unknown if user managed

@@ -27,7 +27,7 @@ impl<'a> ProcessService for WarrenManager<'a> {
                 let thread = process.threads.get_mut(&0).unwrap();
                 thread.tcb.set_entrypoint(entry, STACK_BASE, 0)?;
                 thread.tcb.set_address(get_utcb_va(0), get_trapframe_va(0))?;
-                thread.tcb.set_priority(SERVICE_PRIORITY)?;
+                thread.tcb.set_priority(SERVICE_PRIORITY, 0)?;
                 thread.tcb.resume()?;
                 Ok(pid.bits())
             }
