@@ -53,7 +53,7 @@ impl<'a> ResourceService for WarrenManager<'a> {
         id: usize,
         _recv: CapPtr,
     ) -> Result<CapPtr, Error> {
-        log!("get_cap: type={:?}, id={}", cap_type, id);
+        log!("get_cap: pid: {:?}, type={:?}, id={}", pid, cap_type, id);
         let cptr = match cap_type {
             ResourceType::Kernel => self.res.kernel_cap,
             ResourceType::Untyped => self.res.untyped_cap,

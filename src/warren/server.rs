@@ -33,6 +33,7 @@ impl<'a> SystemService for WarrenManager<'a> {
         self.running = true;
         while self.running {
             self.refill_buddy();
+            let _ = self.ctx.root_cnode.delete(self.recv);
             let mut utcb = unsafe { UTCB::new() };
             utcb.clear();
             utcb.set_reply_window(self.reply.cap());
