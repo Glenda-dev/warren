@@ -1,7 +1,7 @@
 use crate::WarrenManager;
 use alloc::collections::btree_map::BTreeMap;
 use glenda::arch::mem::PGSIZE;
-use glenda::cap::{CapPtr, CapType, Frame, Rights};
+use glenda::cap::{CapPtr, CapType, Frame, Kernel, Rights};
 use glenda::error::Error;
 use glenda::interface::ResourceService;
 use glenda::ipc::Badge;
@@ -11,9 +11,9 @@ use glenda::utils::align::align_up;
 use glenda::utils::manager::{CSpaceService, UntypedService, VSpaceService};
 
 pub struct ResourceRegistry {
-    pub kernel_cap: CapPtr,
+    pub kernel_cap: Kernel,
     pub irq_cap: CapPtr,
-    pub mmio_cap: CapPtr,
+    pub console_cap: CapPtr,
     pub untyped_cap: CapPtr,
     pub bootinfo_cap: CapPtr,
     pub endpoints: BTreeMap<usize, CapPtr>,
@@ -55,16 +55,17 @@ impl<'a> ResourceService for WarrenManager<'a> {
     ) -> Result<CapPtr, Error> {
         log!("get_cap: pid: {:?}, type={:?}, id={}", pid, cap_type, id);
         let cptr = match cap_type {
-            ResourceType::Kernel => self.res.kernel_cap,
+            ResourceType::Kernel => self.res.kernel_cap.cap(),
             ResourceType::Untyped => self.res.untyped_cap,
             ResourceType::Irq => {
                 let slot = self.ctx.cspace_mgr.alloc(self.ctx.buddy)?;
-                self.ctx.root_cnode.mint(self.res.irq_cap, slot, Badge::new(id), Rights::ALL)?;
+                self.res.kernel_cap.get_irq(id, slot)?;
                 let p = self.processes.get_mut(&pid).ok_or(Error::NotFound)?;
                 p.allocated_slots.push(slot);
                 slot
             }
-            ResourceType::Mmio => self.res.mmio_cap,
+            ResourceType::IrqControl => self.res.irq_cap,
+            ResourceType::Console => self.res.console_cap,
             ResourceType::Bootinfo => self.res.bootinfo_cap,
             ResourceType::Endpoint => {
                 let p = self.processes.get_mut(&pid).ok_or(Error::NotFound)?;

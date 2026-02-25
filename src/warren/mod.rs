@@ -11,7 +11,8 @@ pub use self::buddy::BuddyAllocator;
 use crate::elf::ElfFile;
 use crate::elf::{PF_W, PF_X, PT_LOAD, PT_TLS};
 use crate::layout::{
-    BOOTINFO_SLOT, IRQ_SLOT, MMIO_SLOT, SCRATCH_SIZE, SCRATCH_VA, STACK_SIZE, UNTYPED_SLOT,
+    BOOTINFO_SLOT, CONSOLE_SLOT, IRQ_CONTROL_SLOT, KERNEL_SLOT, SCRATCH_SIZE, SCRATCH_VA,
+    STACK_SIZE, UNTYPED_SLOT,
 };
 use crate::warren::resource::ResourceRegistry;
 use alloc::collections::{BTreeMap, VecDeque};
@@ -19,8 +20,10 @@ use alloc::string::ToString;
 use core::cmp::min;
 pub use data::*;
 use glenda::arch::mem::{KSTACK_PAGES, PGSIZE};
-use glenda::cap::{CNode, CapPtr, CapType, Endpoint, Frame, Reply, Rights, TCB, Untyped, VSpace};
-use glenda::cap::{CSPACE_SLOT, KERNEL_SLOT, MONITOR_SLOT, TCB_SLOT, VSPACE_SLOT};
+use glenda::cap::{
+    CNode, CapPtr, CapType, Endpoint, Frame, Kernel, Reply, Rights, TCB, Untyped, VSpace,
+};
+use glenda::cap::{CSPACE_SLOT, MONITOR_SLOT, TCB_SLOT, VSPACE_SLOT};
 use glenda::error::Error;
 use glenda::ipc::{Badge, IpcRouter};
 use glenda::mem::{ENTRY_VA, HEAP_SIZE, HEAP_VA, STACK_BASE};
@@ -96,9 +99,9 @@ impl<'a> WarrenManager<'a> {
             wait_queues: BTreeMap::new(),
             initrd,
             res: ResourceRegistry {
-                kernel_cap: KERNEL_SLOT,
-                irq_cap: IRQ_SLOT,
-                mmio_cap: MMIO_SLOT,
+                kernel_cap: Kernel::from(KERNEL_SLOT),
+                irq_cap: IRQ_CONTROL_SLOT,
+                console_cap: CONSOLE_SLOT,
                 untyped_cap: UNTYPED_SLOT,
                 bootinfo_cap: BOOTINFO_SLOT,
                 endpoints: BTreeMap::new(),
@@ -185,6 +188,7 @@ impl<'a> WarrenManager<'a> {
         child_cnode.copy(child_cnode.cap(), CSPACE_SLOT, Rights::ALL)?;
         child_cnode.copy(child_tcb.cap(), TCB_SLOT, Rights::ALL)?;
         child_cnode.copy(child_endpoint.cap(), MONITOR_SLOT, Rights::ALL)?;
+        child_cnode.copy(self.res.console_cap, CONSOLE_SLOT, Rights::ALL)?;
 
         // Child process vspace manager doesn't use scratch area from self, or we can give it one?
         // For now, pass 0 size to indicate no scratch area.
