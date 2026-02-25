@@ -59,7 +59,8 @@ impl<'a> MemoryService for WarrenManager<'a> {
         // Use Warren's root CNode for managing intermediate page tables
         let cspace = self.ctx.root_cnode;
         // Check Range
-        if addr < 0x30000000 || addr >= 0x70000000 {
+        if addr < 0x30000000 || addr >= 0x3F_0000_0000 {
+            error!("mmap: Address {:#x} out of allowed range", addr);
             return Err(Error::PermissionDenied);
         }
         process.vspace_mgr.map_frame(
