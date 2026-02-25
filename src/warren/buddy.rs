@@ -23,10 +23,40 @@ impl BuddyAllocator {
         Self { free_lists: [EMPTY_VEC; MAX_ORDER + 1], free_slots: Vec::with_capacity(128) }
     }
 
-    pub fn add_block(&mut self, cap: Untyped, order: usize, paddr: usize) {
-        if order <= MAX_ORDER && order >= MIN_ORDER {
-            self.free_lists[order].push((cap, paddr));
+    pub fn add_block(&mut self, cap: Untyped, mut order: usize, mut paddr: usize) {
+        if order > MAX_ORDER || order < MIN_ORDER {
+            return;
         }
+
+        while order < MAX_ORDER {
+            let buddy_paddr = paddr ^ (1 << order);
+            let buddy_pos =
+                self.free_lists[order].iter().position(|&(_, addr)| addr == buddy_paddr);
+
+            if let Some(idx) = buddy_pos {
+                let (buddy_cap, _) = self.free_lists[order].remove(idx);
+
+                // Attempt to merge in kernel
+                if cap.merge(&buddy_cap).is_ok() {
+                    order += 1;
+                    paddr &= !(1 << (order - 1));
+                    // Return the slot of buddy_cap to our internal pool for future splits
+                    self.free_slots.push(buddy_cap.cap());
+                } else {
+                    // Merge failed, restore buddy and stop
+                    error!(
+                        "buddy: Merge failed order={}, paddr={:#x}, buddy={:#x}",
+                        order, paddr, buddy_paddr
+                    );
+                    self.free_lists[order].push((buddy_cap, buddy_paddr));
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
+
+        self.free_lists[order].push((cap, paddr));
     }
 
     pub fn add_free_slot(&mut self, slot: CapPtr) {
@@ -88,7 +118,7 @@ impl BuddyAllocator {
                 return Ok((current_cap, current_paddr));
             }
         }
-
+        error!("buddy: Exhausted");
         Err(Error::OutOfMemory)
     }
 
@@ -100,19 +130,27 @@ impl BuddyAllocator {
 impl UntypedService for BuddyAllocator {
     fn alloc(&mut self, obj_type: CapType, flags: usize, dest: CapPtr) -> Result<usize, Error> {
         // Calculate required order
-        let order = match obj_type {
-            CapType::Frame => (flags * PGSIZE).next_power_of_two().ilog2() as usize,
-            CapType::Untyped => (flags * PGSIZE).next_power_of_two().ilog2() as usize,
-            CapType::CNode => (CNODE_PAGES * PGSIZE).next_power_of_two().ilog2() as usize,
-            CapType::VSpace | CapType::PageTable => 12, // 4KB for PageTable
-            _ => MIN_ORDER,
+        let pages = match obj_type {
+            CapType::Frame => flags,
+            CapType::Untyped => flags,
+            CapType::CNode => CNODE_PAGES,
+            _ => 1,
         };
+        let order = pages.next_power_of_two().ilog2() as usize + MIN_ORDER;
 
         let (untyped, paddr) = self.alloc_untyped(order)?;
 
+        // Ensure we retype the full power-of-two size to avoid leaking the remainder
+        // and causing buddy merge failures when recycled.
+        let alloc_pages = if obj_type == CapType::Frame || obj_type == CapType::Untyped {
+            1 << (order - MIN_ORDER)
+        } else {
+            pages
+        };
+
         match obj_type {
-            CapType::Untyped => untyped.retype_untyped(flags, dest)?,
-            CapType::Frame => untyped.retype_frame(flags, dest)?,
+            CapType::Untyped => untyped.retype_untyped(alloc_pages, dest)?,
+            CapType::Frame => untyped.retype_frame(alloc_pages, dest)?,
             CapType::CNode => untyped.retype_cnode(dest)?,
             CapType::PageTable => untyped.retype_pagetable(flags, dest)?,
             CapType::TCB => untyped.retype_tcb(dest)?,

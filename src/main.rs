@@ -68,11 +68,22 @@ fn main() -> usize {
         let original_cap = Untyped::from(cptr);
 
         while desc.pages > 0 {
-            let total_bytes = desc.pages * PGSIZE;
-            let mut order = total_bytes.ilog2() as usize;
+            // 考虑物理地址的对齐限制和区域的大小限制
+            let align_order =
+                if desc.start == 0 { 30 } else { desc.start.trailing_zeros() as usize };
+            let size_order = (desc.pages * PGSIZE).ilog2() as usize;
+            let mut order = core::cmp::min(align_order, size_order);
+
             if order > 30 {
+                warn!("buddy: Order {} too big", order);
                 order = 30;
             }
+            if order < 12 {
+                // 如果地址连 4KB 都不对齐，我们直接跳过（这不应该发生）
+                error!("buddy: Order {} too small", order);
+                break;
+            }
+
             let block_pages = 1 << (order - 12);
 
             if let Ok(slot) = cspace_mgr.alloc(&mut dummy) {

@@ -320,6 +320,8 @@ impl<'a> WarrenManager<'a> {
                         self.ctx.cspace_mgr,
                         root_cnode,
                     )?;
+                    process.allocated_slots.push(frame_cap);
+
                     let scratch_slot = self.ctx.cspace_mgr.alloc(self.ctx.buddy)?;
                     self.ctx.root_cnode.copy(frame_cap, scratch_slot, Rights::ALL)?;
                     let scratch_frame = Frame::from(scratch_slot);
@@ -347,6 +349,8 @@ impl<'a> WarrenManager<'a> {
                             .copy_from_slice(&elf_data[offset..offset + actual_copy]);
                     }
                     self.ctx.vspace_mgr.unmap_scratch(scratch_vaddr, num_pages)?;
+                    self.ctx.root_cnode.delete(scratch_slot)?;
+                    self.ctx.cspace_mgr.free(scratch_slot)?;
                 }
                 PT_TLS => {
                     _tls = Some(TLS {
@@ -372,43 +376,31 @@ impl<'a> WarrenManager<'a> {
             p.state = ProcessState::Dead;
 
             // Suspend and cleanup threads
-            for (_, thread) in p.threads.iter() {
-                thread.tcb.suspend()?;
+            for (tid, thread) in p.threads.iter() {
+                if let Err(e) = thread.tcb.suspend() {
+                    warn!("Failed to suspend thread {} of pid {:?}: {:?}", tid, pid, e);
+                }
                 // Recycle thread resources
                 for slot in thread.allocated_slots.iter() {
-                    self.ctx.root_cnode.revoke(*slot)?;
+                    let _ = self.ctx.root_cnode.revoke(*slot);
                     match self.ctx.root_cnode.recycle(*slot) {
                         Ok((paddr, pages)) => {
                             if pages > 0 {
-                                let order = (pages * PGSIZE).ilog2() as usize;
+                                // Use next_power_of_two to match BuddyAllocator's allocation logic
+                                let order = (pages * PGSIZE).next_power_of_two().ilog2() as usize;
                                 self.ctx.buddy.add_block(Untyped::from(*slot), order, paddr);
                             } else {
-                                match self.ctx.root_cnode.delete(*slot) {
-                                    Ok(()) => {
-                                        self.ctx.cspace_mgr.free(*slot)?;
-                                    }
-                                    Err(e) => {
-                                        warn!(
-                                            "Failed to delete slot {}: {:?}, skipping free",
-                                            slot, e
-                                        );
-                                        Err(e)?;
-                                    }
-                                }
+                                let _ = self.ctx.root_cnode.delete(*slot);
+                                let _ = self.ctx.cspace_mgr.free(*slot);
                             }
                         }
                         Err(e) => {
-                            warn!("Failed to recycle slot {:?}: {:?}, deleting instead", slot, e);
-                            // FIXME
-                            match self.ctx.root_cnode.delete(*slot) {
-                                Ok(()) => {
-                                    self.ctx.cspace_mgr.free(*slot)?;
-                                }
-                                Err(e) => {
-                                    warn!("Failed to delete slot {}: {:?}, skipping free", slot, e);
-                                    Err(e)?;
-                                }
-                            }
+                            warn!(
+                                "Failed to recycle thread slot {:?}: {:?}, deleting instead",
+                                slot, e
+                            );
+                            let _ = self.ctx.root_cnode.delete(*slot);
+                            let _ = self.ctx.cspace_mgr.free(*slot);
                         }
                     }
                 }
@@ -416,23 +408,23 @@ impl<'a> WarrenManager<'a> {
 
             // Recycle process resources
             for slot in p.allocated_slots.iter() {
-                self.ctx.root_cnode.revoke(*slot)?;
+                let _ = self.ctx.root_cnode.revoke(*slot);
                 match self.ctx.root_cnode.recycle(*slot) {
                     Ok((paddr, pages)) => {
                         if pages > 0 {
-                            let order = (pages * PGSIZE).ilog2() as usize;
+                            let order = (pages * PGSIZE).next_power_of_two().ilog2() as usize;
                             self.ctx.buddy.add_block(Untyped::from(*slot), order, paddr);
                         } else {
-                            self.ctx.root_cnode.delete(*slot)?;
+                            let _ = self.ctx.root_cnode.delete(*slot);
                         }
                     }
                     Err(e) => {
-                        warn!("Failed to recycle slot {}: {:?}, deleting instead", slot, e);
-                        self.ctx.root_cnode.delete(*slot)?;
+                        warn!("Failed to recycle process slot {}: {:?}, deleting instead", slot, e);
+                        let _ = self.ctx.root_cnode.delete(*slot);
                     }
                 }
                 // Always free the slot from CSpaceManager to prevent leaks
-                self.ctx.cspace_mgr.free(*slot)?;
+                let _ = self.ctx.cspace_mgr.free(*slot);
             }
             log!("Process exited: pid: {:?}, code={}", pid, code);
         } else {
