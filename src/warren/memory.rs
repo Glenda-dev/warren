@@ -16,6 +16,7 @@ impl<'a> MemoryService for WarrenManager<'a> {
         let new_brk = (old_brk as isize + incr) as usize;
 
         if new_brk < process.heap_start {
+            error!("brk: new_brk {:#x} is below heap_start {:#x}", new_brk, process.heap_start);
             return Err(Error::InvalidArgs);
         }
 
@@ -53,6 +54,7 @@ impl<'a> MemoryService for WarrenManager<'a> {
     fn mmap(&mut self, pid: Badge, frame: Frame, addr: usize, len: usize) -> Result<usize, Error> {
         log!("mmap: pid: {:?}, frame={:?}, addr={:#x}, len={:#x}", pid, frame, addr, len);
         if addr % PGSIZE != 0 || len == 0 {
+            error!("mmap: Invalid address {:#x} or length {:#x}", addr, len);
             return Err(Error::InvalidArgs);
         }
         let process = self.processes.get_mut(&pid).ok_or(Error::NotFound)?;
@@ -78,6 +80,7 @@ impl<'a> MemoryService for WarrenManager<'a> {
     fn munmap(&mut self, pid: Badge, addr: usize, len: usize) -> Result<(), Error> {
         log!("munmap: pid: {:?}, addr={:#x}, len={:#x}", pid, addr, len);
         if addr % PGSIZE != 0 {
+            error!("munmap: Invalid address {:#x}", addr);
             return Err(Error::InvalidArgs);
         }
         let process = self.processes.get_mut(&pid).ok_or(Error::NotFound)?;
