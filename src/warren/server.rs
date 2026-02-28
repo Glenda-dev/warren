@@ -46,15 +46,15 @@ impl<'a> SystemService for WarrenManager<'a> {
                 }
             };
 
+            let badge = utcb.get_badge();
+            let proto = utcb.get_msg_tag().proto();
+            let label = utcb.get_msg_tag().label();
             match self.dispatch(&mut utcb) {
                 Ok(()) => {}
                 Err(e) => {
                     if e == Error::Success {
                         continue;
                     }
-                    let badge = utcb.get_badge();
-                    let proto = utcb.get_msg_tag().proto();
-                    let label = utcb.get_msg_tag().label();
                     error!(
                         "Failed to dispatch message for {}: {:?}, proto={:#x}, label={:#x}",
                         badge, e, proto, label
