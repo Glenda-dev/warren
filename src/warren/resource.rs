@@ -3,12 +3,11 @@ use alloc::collections::btree_map::BTreeMap;
 use glenda::arch::mem::PGSIZE;
 use glenda::cap::{CapPtr, CapType, Frame, Kernel, Rights};
 use glenda::error::Error;
-use glenda::interface::ResourceService;
+use glenda::interface::{CSpaceService, ResourceService, VSpaceService};
 use glenda::ipc::Badge;
 use glenda::mem::Perms;
 use glenda::protocol::resource::ResourceType;
 use glenda::utils::align::align_up;
-use glenda::utils::manager::{CSpaceService, UntypedService, VSpaceService};
 
 pub struct ResourceRegistry {
     pub kernel_cap: Kernel,
@@ -27,7 +26,7 @@ impl<'a> ResourceService for WarrenManager<'a> {
         flags: usize,
         _recv: CapPtr,
     ) -> Result<CapPtr, Error> {
-        self.do_alloc(pid, obj_type, flags).map(|(_, cap)| cap)
+        self.do_alloc(pid, obj_type, flags)
     }
 
     fn dma_alloc(
@@ -36,15 +35,17 @@ impl<'a> ResourceService for WarrenManager<'a> {
         pages: usize,
         _recv: CapPtr,
     ) -> Result<(usize, Frame), Error> {
-        self.do_alloc(pid, CapType::Frame, pages).map(|(paddr, cap)| (paddr, Frame::from(cap)))
+        let p = self.processes.get_mut(&pid).ok_or(Error::NotFound)?;
+        let allocator = &mut *self.ctx.allocator;
+        let (paddr, slot) = p.arena_allocator.alloc(pages, allocator)?;
+        p.allocated_slots.insert(slot);
+        log!("dma_alloc: pid: {:?}, paddr={:#x}, pages={}", pid, paddr, pages);
+        Ok((paddr, Frame::from(slot)))
     }
 
     fn free(&mut self, pid: Badge, cap: CapPtr) -> Result<(), Error> {
         log!("free: pid: {:?}, cap={:?}", pid, cap);
-        let p = self.processes.get_mut(&pid).ok_or(Error::NotFound)?;
-        let cnode = p.cnode;
-        cnode.delete(cap)?;
-        Ok(())
+        Err(Error::NotSupported) // 目前不支持细粒度的自由释放，统一通过 revoke/recycle 处理
     }
     fn get_cap(
         &mut self,
@@ -58,10 +59,12 @@ impl<'a> ResourceService for WarrenManager<'a> {
             ResourceType::Kernel => self.res.kernel_cap.cap(),
             ResourceType::Untyped => self.res.untyped_cap,
             ResourceType::Irq => {
-                let slot = self.ctx.cspace_mgr.alloc(self.ctx.buddy)?;
+                let allocator = &mut *self.ctx.allocator;
+                let cspace_mgr = &mut *self.ctx.cspace_mgr;
+                let slot = cspace_mgr.alloc(allocator)?;
                 self.res.kernel_cap.get_irq(id, slot)?;
                 let p = self.processes.get_mut(&pid).ok_or(Error::NotFound)?;
-                p.allocated_slots.push(slot);
+                p.allocated_resources.insert(slot);
                 slot
             }
             ResourceType::IrqControl => self.res.irq_cap,
@@ -70,9 +73,11 @@ impl<'a> ResourceService for WarrenManager<'a> {
             ResourceType::Endpoint => {
                 let p = self.processes.get_mut(&pid).ok_or(Error::NotFound)?;
                 let ep = self.res.endpoints.get(&id).ok_or(Error::NotFound)?;
-                let slot = self.ctx.cspace_mgr.alloc(self.ctx.buddy)?;
+                let allocator = &mut *self.ctx.allocator;
+                let cspace_mgr = &mut *self.ctx.cspace_mgr;
+                let slot = cspace_mgr.alloc(allocator)?;
                 self.ctx.root_cnode.mint(*ep, slot, pid, Rights::ALL)?;
-                p.allocated_slots.push(slot);
+                p.allocated_resources.insert(slot);
                 slot
             }
             _ => return Err(Error::InvalidArgs),
@@ -88,13 +93,15 @@ impl<'a> ResourceService for WarrenManager<'a> {
         recv: CapPtr,
     ) -> Result<(), Error> {
         log!("register_cap: type={:?}, id={}", cap_type, id);
-        let slot = self.ctx.cspace_mgr.alloc(self.ctx.buddy)?;
+        let allocator = &mut *self.ctx.allocator;
+        let cspace_mgr = &mut *self.ctx.cspace_mgr;
+        let slot = cspace_mgr.alloc(allocator)?;
         self.ctx.root_cnode.move_cap(recv, slot)?;
         match cap_type {
             ResourceType::Endpoint => {
                 self.res.endpoints.insert(id, slot);
                 let p = self.processes.get_mut(&pid).ok_or(Error::NotFound)?;
-                p.allocated_slots.push(slot);
+                p.allocated_resources.insert(slot);
                 Ok(())
             }
             _ => Err(Error::InvalidArgs),
@@ -112,47 +119,45 @@ impl<'a> ResourceService for WarrenManager<'a> {
         let file = self.initrd.get_file(name).ok_or(Error::NotFound)?;
         let len = file.len();
         let pages = align_up(len, PGSIZE) / PGSIZE;
-        let slot = self.ctx.cspace_mgr.alloc(self.ctx.buddy)?;
-        self.ctx.buddy.alloc(
-            CapType::Frame,
-            pages,
-            CapPtr::concat(self.ctx.root_cnode.cap(), slot),
-        )?;
+        let global_allocator = &mut *self.ctx.allocator;
+        let cspace_mgr = &mut *self.ctx.cspace_mgr;
+
+        let (_, slot) = p.arena_allocator.alloc(pages, global_allocator)?;
         let frame = Frame::from(slot);
         let vaddr = self.ctx.vspace_mgr.map_scratch(
             frame,
-            Perms::READ | Perms::WRITE | Perms::USER,
+            Perms::READ | Perms::WRITE,
             pages,
-            self.ctx.buddy,
-            self.ctx.cspace_mgr,
-            self.ctx.root_cnode,
+            global_allocator,
+            cspace_mgr,
         )?;
         unsafe {
             let dst = core::slice::from_raw_parts_mut(vaddr as *mut u8, len);
             dst[..len].copy_from_slice(file);
         }
-        self.ctx.vspace_mgr.unmap_scratch(vaddr, pages)?;
-        p.allocated_slots.push(slot);
+        self.ctx.vspace_mgr.unmap(vaddr, pages)?;
+        p.allocated_slots.insert(slot);
         Ok((frame, len))
     }
 }
 
 impl<'a> WarrenManager<'a> {
-    fn do_alloc(
-        &mut self,
-        pid: Badge,
-        obj_type: CapType,
-        flags: usize,
-    ) -> Result<(usize, CapPtr), Error> {
+    fn do_alloc(&mut self, pid: Badge, obj_type: CapType, flags: usize) -> Result<CapPtr, Error> {
         let p = self.processes.get_mut(&pid).ok_or(Error::NotFound)?;
-        let slot = self.ctx.cspace_mgr.alloc(self.ctx.buddy)?;
-        let paddr = self.ctx.buddy.alloc(
-            obj_type,
-            flags,
-            CapPtr::concat(self.ctx.root_cnode.cap(), slot),
-        )?;
-        p.allocated_slots.push(slot);
-        log!("alloc: pid: {:?}, type={:?}, flags={:#x}, paddr={:#x}", pid, obj_type, flags, paddr);
-        Ok((paddr, slot))
+        let allocator = &mut *self.ctx.allocator;
+        let cspace_mgr = &mut *self.ctx.cspace_mgr;
+
+        if obj_type == CapType::Frame || obj_type == CapType::Untyped {
+            let (_, slot) = p.arena_allocator.alloc(flags, allocator)?;
+            p.allocated_slots.insert(slot);
+            log!("alloc: pid: {:?}, type={:?}, flags={:#x}", pid, obj_type, flags);
+            Ok(slot)
+        } else {
+            let slot = cspace_mgr.alloc(allocator)?;
+            let _ = allocator.alloc(obj_type, flags, slot)?;
+            p.allocated_slots.insert(slot);
+            log!("alloc: pid: {:?}, type={:?}, flags={:#x}", pid, obj_type, flags);
+            Ok(slot)
+        }
     }
 }

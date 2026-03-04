@@ -19,3 +19,10 @@ pub const BOOTINFO_CAP: Frame = Frame::from(BOOTINFO_SLOT);
 pub const UNTYPED_CAP: CNode = CNode::from(UNTYPED_SLOT);
 pub const CONSOLE_CAP: glenda::cap::Console = glenda::cap::Console::from(CONSOLE_SLOT);
 pub const IRQ_CONTROL_CAP: IrqHandler = IrqHandler::from(IRQ_CONTROL_SLOT);
+
+pub const MAX_STACK_SIZE: usize = 8 * 1024 * 1024; // 8MB
+
+pub const SERVICE_PRIORITY: u8 = 128;
+
+pub const LOW_RESERVE: usize = 128;
+pub const FULL_RESERVE: usize = 256;

@@ -1,4 +1,3 @@
-mod buddy;
 mod data;
 mod fault;
 mod memory;
@@ -7,41 +6,40 @@ mod resource;
 mod server;
 mod thread;
 
-pub use self::buddy::BuddyAllocator;
 use crate::elf::ElfFile;
 use crate::elf::{PF_W, PF_X, PT_LOAD, PT_TLS};
-use crate::layout::{
-    BOOTINFO_SLOT, CONSOLE_SLOT, IRQ_CONTROL_SLOT, KERNEL_SLOT, SCRATCH_SIZE, SCRATCH_VA,
-    STACK_SIZE, UNTYPED_SLOT,
-};
+use crate::layout::*;
+use crate::policy::{ArenaAllocator, MemoryPolicy};
 use crate::warren::resource::ResourceRegistry;
 use alloc::collections::{BTreeMap, VecDeque};
 use alloc::string::ToString;
 use core::cmp::min;
-pub use data::*;
 use glenda::arch::mem::{KSTACK_PAGES, PGSIZE};
 use glenda::cap::{
     CNode, CapPtr, CapType, Endpoint, Frame, Kernel, Reply, Rights, TCB, Untyped, VSpace,
 };
-use glenda::cap::{CSPACE_SLOT, MONITOR_SLOT, TCB_SLOT, VSPACE_SLOT};
+use glenda::cap::{CONSOLE_SLOT, CSPACE_SLOT, MONITOR_SLOT, TCB_SLOT, VSPACE_SLOT};
 use glenda::error::Error;
+use glenda::interface::{CSpaceService, VSpaceService};
 use glenda::ipc::{Badge, IpcRouter};
-use glenda::mem::{ENTRY_VA, HEAP_SIZE, HEAP_VA, STACK_BASE};
-use glenda::mem::{Perms, get_trapframe_va, get_utcb_va};
-use glenda::utils::align::align_up;
+use glenda::mem::Perms;
+use glenda::mem::{
+    ENTRY_VA, HEAP_SIZE, HEAP_VA, STACK_BASE, TRAMPOLINE_VA, get_trapframe_va, get_utcb_va,
+};
+use glenda::utils::align::{align_down, align_up};
 use glenda::utils::initrd::Initrd;
 use glenda::utils::manager::{CSpaceManager, VSpaceManager};
-use glenda::utils::manager::{CSpaceService, UntypedService, VSpaceService};
+
+pub use data::*;
 pub use thread::TLS;
 
 const SERVICE_PRIORITY: u8 = 252;
 
 pub struct SystemContext<'a> {
-    pub root_cnode: CNode,
     pub vspace_mgr: &'a mut VSpaceManager,
-    // pub untyped_mgr: &'a mut UntypedManager, // Replaced by buddy
-    pub buddy: &'a mut BuddyAllocator,
     pub cspace_mgr: &'a mut CSpaceManager,
+    pub allocator: &'a mut dyn MemoryPolicy<'a>,
+    pub root_cnode: CNode,
 }
 
 pub struct WarrenManager<'a> {
@@ -70,10 +68,10 @@ pub struct WarrenManager<'a> {
 
 impl<'a> WarrenManager<'a> {
     pub fn new(
-        root_cnode: CNode,
         vspace_mgr: &'a mut VSpaceManager,
-        buddy: &'a mut BuddyAllocator,
         cspace_mgr: &'a mut CSpaceManager,
+        allocator: &'a mut dyn MemoryPolicy<'a>,
+        root_cnode: CNode,
         initrd: Initrd<'a>,
     ) -> Self {
         // Init self vspace with known regions (to populate shadow tables)
@@ -89,6 +87,8 @@ impl<'a> WarrenManager<'a> {
         vspace_mgr.mark_existing(get_utcb_va(0), PGSIZE);
         // 5. TrapFrame
         vspace_mgr.mark_existing(get_trapframe_va(0), PGSIZE);
+        // 6. Trampoline
+        vspace_mgr.mark_existing(TRAMPOLINE_VA, PGSIZE);
 
         Self {
             processes: BTreeMap::new(),
@@ -106,30 +106,15 @@ impl<'a> WarrenManager<'a> {
                 bootinfo_cap: BOOTINFO_SLOT,
                 endpoints: BTreeMap::new(),
             },
-            ctx: SystemContext { root_cnode, vspace_mgr, buddy, cspace_mgr },
+            ctx: SystemContext { vspace_mgr, cspace_mgr, allocator, root_cnode },
             running: false,
             router: IpcRouter::new(),
         }
     }
     fn alloc_pid(&mut self) -> Result<Badge, Error> {
-        let next = self.pid.bits().checked_add(1).ok_or(Error::CNodeFull)?;
+        let next = self.pid.bits().checked_add(1).ok_or(Error::OutOfMemory)?;
         self.pid = Badge::new(next);
         Ok(self.pid)
-    }
-
-    pub fn refill_buddy(&mut self) {
-        // Maintain at least 128 reserved slots for buddy splitting
-        const LOW_RESERVE: usize = 128;
-        const FULL_RESERVE: usize = 256;
-        if self.ctx.buddy.reserve_count() < LOW_RESERVE {
-            for _ in 0..(FULL_RESERVE - self.ctx.buddy.reserve_count()) {
-                if let Ok(slot) = self.ctx.cspace_mgr.alloc(self.ctx.buddy) {
-                    self.ctx.buddy.add_free_slot(slot);
-                } else {
-                    break;
-                }
-            }
-        }
     }
 
     fn create(&mut self, name: &str) -> Result<Process, Error> {
@@ -138,50 +123,65 @@ impl<'a> WarrenManager<'a> {
         let utcb_va = get_utcb_va(0);
         let trapframe_va = get_trapframe_va(0);
 
-        let ep_slot = self.ctx.cspace_mgr.alloc(self.ctx.buddy)?;
+        let allocator = &mut *self.ctx.allocator;
+        let cspace_mgr = &mut *self.ctx.cspace_mgr;
+
+        let ep_slot = cspace_mgr.alloc(allocator)?;
         // Use pid << 16 | tid (0) for the main thread badge
         let badge = Badge::new(pid.bits() << 16);
         self.ctx.root_cnode.mint(self.endpoint.cap(), ep_slot, badge, Rights::ALL)?;
         let child_endpoint = Endpoint::from(ep_slot);
 
-        let cnode_slot = self.ctx.cspace_mgr.alloc(self.ctx.buddy)?;
-        let full_cnode_dest = CapPtr::concat(self.ctx.root_cnode.cap(), cnode_slot);
-        self.ctx.buddy.alloc(CapType::CNode, 0, full_cnode_dest)?;
+        let cnode_slot = cspace_mgr.alloc(allocator)?;
+        allocator.alloc(CapType::CNode, 0, cnode_slot)?;
         let child_cnode = CNode::from(cnode_slot);
 
-        let pd_slot = self.ctx.cspace_mgr.alloc(self.ctx.buddy)?;
-        let full_pd_dest = CapPtr::concat(self.ctx.root_cnode.cap(), pd_slot);
-        self.ctx.buddy.alloc(CapType::VSpace, 0, full_pd_dest)?;
+        let pd_slot = cspace_mgr.alloc(allocator)?;
+        allocator.alloc(CapType::VSpace, 0, pd_slot)?;
         let child_pd = VSpace::from(pd_slot);
 
-        let tcb_slot = self.ctx.cspace_mgr.alloc(self.ctx.buddy)?;
-        let full_tcb_dest = CapPtr::concat(self.ctx.root_cnode.cap(), tcb_slot);
-        self.ctx.buddy.alloc(CapType::TCB, 0, full_tcb_dest)?;
+        // 为进程分配 Arena 专用的 CNode 和 CSpaceManager
+        let arena_cnode_slot = cspace_mgr.alloc(allocator)?;
+        allocator.alloc(CapType::CNode, 0, arena_cnode_slot)?;
+        let arena_cnode = CNode::from(arena_cnode_slot);
+
+        // 我们需要手动分配第一个二级 CNode，因为 ArenaAllocator 无法递归分配
+        let mut arena_cspace_mgr = CSpaceManager::new(arena_cnode, 1);
+        let first_l1_slot = CapPtr::concat(arena_cnode.cap(), CapPtr::from(1));
+        allocator.alloc(CapType::CNode, 0, first_l1_slot)?;
+        arena_cspace_mgr.mark_present(1);
+
+        // 从全局分配器预拨一块内存作为 Arena 的根 Untyped
+        let arena_untyped_slot = cspace_mgr.alloc(allocator)?;
+        let arena_size_pages = 256; // 1MB 初始大小
+        let arena_paddr =
+            allocator.alloc(CapType::Untyped, arena_size_pages, arena_untyped_slot)?;
+        let arena_untyped = Untyped::from(arena_untyped_slot);
+
+        let mut arena_allocator = ArenaAllocator::new(
+            arena_cspace_mgr,
+            Some((arena_untyped, arena_paddr, arena_size_pages)),
+            arena_size_pages,
+        );
+
+        let tcb_slot = cspace_mgr.alloc(allocator)?;
+        allocator.alloc(CapType::TCB, 0, tcb_slot)?;
         let child_tcb = TCB::from(tcb_slot);
 
-        let utcb_slot = self.ctx.cspace_mgr.alloc(self.ctx.buddy)?;
-        let full_utcb_dest = CapPtr::concat(self.ctx.root_cnode.cap(), utcb_slot);
-        self.ctx.buddy.alloc(CapType::Frame, 1, full_utcb_dest)?;
+        // 使用 Arena 分配 UTCB, TrapFrame 等资源
+        let (_, utcb_slot) = arena_allocator.alloc(1, allocator)?;
         let child_utcb = Frame::from(utcb_slot);
 
-        let trapframe_slot = self.ctx.cspace_mgr.alloc(self.ctx.buddy)?;
-        let full_tf_dest = CapPtr::concat(self.ctx.root_cnode.cap(), trapframe_slot);
-        self.ctx.buddy.alloc(CapType::Frame, 1, full_tf_dest)?;
+        let (_, trapframe_slot) = arena_allocator.alloc(1, allocator)?;
         let child_trapframe = Frame::from(trapframe_slot);
 
-        let stack_slot = self.ctx.cspace_mgr.alloc(self.ctx.buddy)?;
-        let full_stack_dest = CapPtr::concat(self.ctx.root_cnode.cap(), stack_slot);
-        self.ctx.buddy.alloc(CapType::Frame, 1, full_stack_dest)?;
+        let (_, stack_slot) = arena_allocator.alloc(1, allocator)?;
         let child_stack = Frame::from(stack_slot);
 
-        let kstack_slot = self.ctx.cspace_mgr.alloc(self.ctx.buddy)?;
-        let full_kstack_dest = CapPtr::concat(self.ctx.root_cnode.cap(), kstack_slot);
-        self.ctx.buddy.alloc(CapType::Frame, KSTACK_PAGES, full_kstack_dest)?;
+        let (_, kstack_slot) = arena_allocator.alloc(KSTACK_PAGES, allocator)?;
         let child_kstack = Frame::from(kstack_slot);
 
-        let heap_slot = self.ctx.cspace_mgr.alloc(self.ctx.buddy)?;
-        let full_heap_dest = CapPtr::concat(self.ctx.root_cnode.cap(), heap_slot);
-        self.ctx.buddy.alloc(CapType::Frame, 1, full_heap_dest)?;
+        let (_, heap_slot) = arena_allocator.alloc(1, allocator)?;
         let child_heap = Frame::from(heap_slot);
 
         child_cnode.copy(child_pd.cap(), VSPACE_SLOT, Rights::ALL)?;
@@ -200,75 +200,79 @@ impl<'a> WarrenManager<'a> {
         vspace_mgr.map_frame(
             child_utcb,
             utcb_va,
-            Perms::READ | Perms::WRITE | Perms::USER,
+            Perms::READ | Perms::WRITE,
             1,
-            self.ctx.buddy,
-            self.ctx.cspace_mgr,
-            self.ctx.root_cnode,
+            allocator,
+            cspace_mgr,
         )?;
         vspace_mgr.map_frame(
             child_trapframe,
             trapframe_va,
-            Perms::READ | Perms::WRITE,
+            Perms::READ | Perms::WRITE | Perms::SUPERVISOR,
             1,
-            self.ctx.buddy,
-            self.ctx.cspace_mgr,
-            self.ctx.root_cnode,
+            allocator,
+            cspace_mgr,
         )?;
         vspace_mgr.map_frame(
             child_stack,
             STACK_BASE - PGSIZE,
-            Perms::READ | Perms::WRITE | Perms::USER,
+            Perms::READ | Perms::WRITE,
             1,
-            self.ctx.buddy,
-            self.ctx.cspace_mgr,
-            self.ctx.root_cnode,
+            allocator,
+            cspace_mgr,
         )?;
         vspace_mgr.map_frame(
             child_heap,
             HEAP_VA,
-            Perms::READ | Perms::WRITE | Perms::USER,
+            Perms::READ | Perms::WRITE,
             1,
-            self.ctx.buddy,
-            self.ctx.cspace_mgr,
-            self.ctx.root_cnode,
+            allocator,
+            cspace_mgr,
         )?;
-        vspace_mgr.setup()?;
+        vspace_mgr.setup(allocator, cspace_mgr)?;
 
         let mut process = Process::new(
             pid,
             Badge::null(),
             name.to_string(),
-            child_tcb, // passed to new and used for thread 0
+            child_tcb,
             child_pd,
             child_cnode,
-            child_utcb, // passed to new and used for thread 0
+            child_utcb,
             vspace_mgr,
-            STACK_BASE, // passed to new and used for thread 0
+            arena_allocator,
+            STACK_BASE,
         );
         process.heap_start = HEAP_VA;
         process.heap_brk = HEAP_VA + PGSIZE;
+
+        // 记录在父进程 CSpace 中分配的槽位，以便在进程退出时回收
+        process.allocated_slots.insert(ep_slot);
+        process.allocated_slots.insert(cnode_slot);
+        process.allocated_slots.insert(pd_slot);
+        process.allocated_slots.insert(arena_cnode_slot);
+        process.allocated_slots.insert(arena_untyped_slot);
+
         {
             let thread = process.threads.get_mut(&0).unwrap();
             thread.stack_pages = 1;
-            thread.allocated_slots.push(tcb_slot);
-            thread.allocated_slots.push(utcb_slot);
-            thread.allocated_slots.push(trapframe_slot);
-            thread.allocated_slots.push(kstack_slot);
-            thread.allocated_slots.push(stack_slot);
+            thread.allocated_slots.insert(tcb_slot);
+            thread.allocated_slots.insert(utcb_slot);
+            thread.allocated_slots.insert(trapframe_slot);
+            thread.allocated_slots.insert(kstack_slot);
+            thread.allocated_slots.insert(stack_slot);
         }
 
-        process.allocated_slots.push(cnode_slot);
-        process.allocated_slots.push(pd_slot);
-        process.allocated_slots.push(ep_slot);
-        process.allocated_slots.push(heap_slot);
+        process.allocated_slots.insert(cnode_slot);
+        process.allocated_slots.insert(pd_slot);
+        process.allocated_slots.insert(ep_slot);
+        process.allocated_slots.insert(heap_slot);
         Ok(process)
     }
     fn load_elf(&mut self, pid: Badge, elf_data: &[u8]) -> Result<(usize, usize), Error> {
         let elf = ElfFile::new(elf_data).map_err(|_| Error::InvalidArgs)?;
         let mut max_vaddr = 0;
         let process = self.processes.get_mut(&pid).ok_or(Error::NotFound)?;
-        let root_cnode = self.ctx.root_cnode;
         let mut _tls = None;
         for phdr in elf.program_headers() {
             let type_ = phdr.p_type as usize;
@@ -281,7 +285,7 @@ impl<'a> WarrenManager<'a> {
             if vaddr + mem_size > max_vaddr {
                 max_vaddr = vaddr + mem_size;
             }
-            let mut perms = Perms::USER | Perms::READ;
+            let mut perms = Perms::READ;
             if phdr.p_flags & PF_W != 0 {
                 perms |= Perms::WRITE;
             }
@@ -299,16 +303,15 @@ impl<'a> WarrenManager<'a> {
             );
             match phdr.p_type {
                 PT_LOAD => {
-                    let start_page = vaddr & !(PGSIZE - 1);
-                    let end_page = (vaddr + mem_size + PGSIZE - 1) & !(PGSIZE - 1);
+                    let start_page = align_down(vaddr, PGSIZE);
+                    let end_page = align_up(vaddr + mem_size, PGSIZE);
                     let num_pages = (end_page - start_page) / PGSIZE;
 
-                    let frame_cap = self.ctx.cspace_mgr.alloc(self.ctx.buddy)?;
-                    self.ctx.buddy.alloc(
-                        CapType::Frame,
-                        num_pages,
-                        CapPtr::concat(root_cnode.cap(), frame_cap),
-                    )?;
+                    let global_allocator = &mut *self.ctx.allocator;
+                    let cspace_mgr = &mut *self.ctx.cspace_mgr;
+
+                    let (_, frame_cap) =
+                        process.arena_allocator.alloc(num_pages, global_allocator)?;
                     let frame = Frame::from(frame_cap);
 
                     process.vspace_mgr.map_frame(
@@ -316,23 +319,17 @@ impl<'a> WarrenManager<'a> {
                         start_page,
                         perms,
                         num_pages,
-                        self.ctx.buddy,
-                        self.ctx.cspace_mgr,
-                        root_cnode,
+                        global_allocator,
+                        cspace_mgr,
                     )?;
-                    process.allocated_slots.push(frame_cap);
-
-                    let scratch_slot = self.ctx.cspace_mgr.alloc(self.ctx.buddy)?;
-                    self.ctx.root_cnode.copy(frame_cap, scratch_slot, Rights::ALL)?;
-                    let scratch_frame = Frame::from(scratch_slot);
+                    process.allocated_slots.insert(frame_cap);
 
                     let scratch_vaddr = self.ctx.vspace_mgr.map_scratch(
-                        scratch_frame,
-                        Perms::READ | Perms::WRITE | Perms::USER,
+                        frame,
+                        Perms::READ | Perms::WRITE,
                         num_pages,
-                        self.ctx.buddy,
-                        self.ctx.cspace_mgr,
-                        root_cnode,
+                        global_allocator,
+                        cspace_mgr,
                     )?;
 
                     let dest_slice = unsafe {
@@ -348,9 +345,8 @@ impl<'a> WarrenManager<'a> {
                         dest_slice[padding..padding + actual_copy]
                             .copy_from_slice(&elf_data[offset..offset + actual_copy]);
                     }
-                    self.ctx.vspace_mgr.unmap_scratch(scratch_vaddr, num_pages)?;
-                    self.ctx.root_cnode.delete(scratch_slot)?;
-                    self.ctx.cspace_mgr.free(scratch_slot)?;
+                    self.ctx.vspace_mgr.unmap(scratch_vaddr, num_pages)?;
+                    process.image_slots.insert(frame_cap);
                 }
                 PT_TLS => {
                     _tls = Some(TLS {
@@ -363,7 +359,6 @@ impl<'a> WarrenManager<'a> {
                 _ => {}
             }
         }
-
         let ep = elf.entry_point();
         let heap = align_up(max_vaddr, PGSIZE);
         log!("Image loaded with entry_point: {:#x}, heap: {:#x}", ep, heap);
@@ -376,61 +371,50 @@ impl<'a> WarrenManager<'a> {
             p.state = ProcessState::Dead;
 
             // Suspend and cleanup threads
+            let allocator = &mut *self.ctx.allocator;
+            let cspace_mgr = &mut *self.ctx.cspace_mgr;
             for (tid, thread) in p.threads.iter() {
                 if let Err(e) = thread.tcb.suspend() {
                     warn!("Failed to suspend thread {} of pid {:?}: {:?}", tid, pid, e);
                 }
                 // Recycle thread resources
                 for slot in thread.allocated_slots.iter() {
-                    let _ = self.ctx.root_cnode.revoke(*slot);
-                    match self.ctx.root_cnode.recycle(*slot) {
-                        Ok((paddr, pages)) => {
-                            if pages > 0 {
-                                // Use next_power_of_two to match BuddyAllocator's allocation logic
-                                let order = (pages * PGSIZE).next_power_of_two().ilog2() as usize;
-                                self.ctx.buddy.add_block(Untyped::from(*slot), order, paddr);
-                            } else {
-                                let _ = self.ctx.root_cnode.delete(*slot);
-                                let _ = self.ctx.cspace_mgr.free(*slot);
-                            }
-                        }
-                        Err(e) => {
-                            warn!(
-                                "Failed to recycle thread slot {:?}: {:?}, deleting instead",
-                                slot, e
-                            );
-                            let _ = self.ctx.root_cnode.delete(*slot);
-                            let _ = self.ctx.cspace_mgr.free(*slot);
-                        }
+                    if let Err(e) = allocator.free(*slot) {
+                        warn!("Failed to recycle thread slot {:?}: {:?}", slot, e);
                     }
+                    cspace_mgr.free(*slot);
                 }
             }
 
             // Recycle process resources
             for slot in p.allocated_slots.iter() {
-                let _ = self.ctx.root_cnode.revoke(*slot);
-                match self.ctx.root_cnode.recycle(*slot) {
-                    Ok((paddr, pages)) => {
-                        if pages > 0 {
-                            let order = (pages * PGSIZE).next_power_of_two().ilog2() as usize;
-                            self.ctx.buddy.add_block(Untyped::from(*slot), order, paddr);
-                        } else {
-                            let _ = self.ctx.root_cnode.delete(*slot);
-                        }
-                    }
-                    Err(e) => {
-                        warn!("Failed to recycle process slot {}: {:?}, deleting instead", slot, e);
-                        let _ = self.ctx.root_cnode.delete(*slot);
-                    }
+                if let Err(e) = allocator.free(*slot) {
+                    warn!("Failed to recycle process slot {:?}: {:?}", slot, e);
                 }
-                // Always free the slot from CSpaceManager to prevent leaks
-                let _ = self.ctx.cspace_mgr.free(*slot);
+                cspace_mgr.free(*slot);
             }
+
+            // Recycle VSpace shadow resources
+            p.vspace_mgr.drop(allocator, cspace_mgr);
+
             log!("Process exited: pid: {:?}, code={}", pid, code);
         } else {
             error!("Failed to find process with pid: {:?}", pid);
             return Err(Error::NotFound);
         }
         Ok(())
+    }
+    pub fn refill_allocator(&mut self) {
+        let rev = self.ctx.allocator.reserve_count();
+        if rev < LOW_RESERVE {
+            warn!("Allocator reserve low: {}. Refilling...", rev);
+            for _ in 0..(FULL_RESERVE - self.ctx.allocator.reserve_count()) {
+                if let Ok(slot) = self.ctx.cspace_mgr.alloc(self.ctx.allocator) {
+                    self.ctx.allocator.add_free_slot(slot);
+                } else {
+                    break;
+                }
+            }
+        }
     }
 }

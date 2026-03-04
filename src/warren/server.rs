@@ -1,16 +1,15 @@
 use super::WarrenManager;
 use crate::layout::INIT_NAME;
 use glenda::cap::MONITOR_SLOT;
-use glenda::cap::{CapPtr, CapType, Endpoint, Frame, Reply};
+use glenda::cap::{CapPtr, CapType, Endpoint, Reply};
 use glenda::error::Error;
 use glenda::interface::{
-    FaultService, MemoryService, ProcessService, ResourceService, SystemService, ThreadService,
+    FaultService, ProcessService, ResourceService, SystemService, ThreadService,
 };
 use glenda::ipc::server::{handle_call, handle_cap_call, handle_notify};
 use glenda::ipc::{Badge, MsgTag, UTCB};
 use glenda::protocol;
-use glenda::protocol::resource::ResourceType;
-use glenda::protocol::resource::{PROCESS_ENDPOINT, RESOURCE_ENDPOINT};
+use glenda::protocol::resource::{PROCESS_ENDPOINT, RESOURCE_ENDPOINT, ResourceType};
 
 impl<'a> SystemService for WarrenManager<'a> {
     fn init(&mut self) -> Result<(), Error> {
@@ -32,8 +31,7 @@ impl<'a> SystemService for WarrenManager<'a> {
         }
         self.running = true;
         while self.running {
-            self.refill_buddy();
-            let _ = self.ctx.root_cnode.delete(self.recv);
+            self.refill_allocator();
             let mut utcb = unsafe { UTCB::new() };
             utcb.clear();
             utcb.set_reply_window(self.reply.cap());
@@ -56,8 +54,11 @@ impl<'a> SystemService for WarrenManager<'a> {
                         continue;
                     }
                     error!(
-                        "Failed to dispatch message for {}: {:?}, proto={:#x}, label={:#x}",
-                        badge, e, proto, label
+                        "Failed to dispatch message for {:#x}: {:?}, proto={:#x}, label={:#x}",
+                        badge.bits(),
+                        e,
+                        proto,
+                        label
                     );
                     utcb.set_msg_tag(MsgTag::err());
                     utcb.set_mr(0, e as usize);
@@ -87,15 +88,8 @@ impl<'a> SystemService for WarrenManager<'a> {
                 let name = unsafe {u.read_str()?};
                 handle_call(u, |_| s.spawn(pid, &name))
             },
-            (protocol::PROCESS_PROTO, protocol::process::FORK) => |s: &mut Self, u: &mut UTCB| {
-                handle_call(u, |_| s.fork(pid))
-            },
             (protocol::PROCESS_PROTO, protocol::process::EXIT) => |s: &mut Self, u: &mut UTCB| {
                 handle_notify(u, |u| s.exit(pid, u.get_mr(0))) // Avoid reply since process is exiting, but indicate success to caller
-            },
-            (protocol::PROCESS_PROTO, protocol::process::EXEC) => |s: &mut Self, u: &mut UTCB| {
-                let path = unsafe {u.read_str()?};
-                handle_call(u, |_| s.exec(pid, &path))
             },
             (protocol::PROCESS_PROTO, protocol::process::THREAD_CREATE) => |s: &mut Self, u: &mut UTCB| {
                 handle_call(u, |u| s.thread_create(pid, u.get_mr(0), u.get_mr(1), u.get_mr(2), u.get_mr(3)))
@@ -121,18 +115,6 @@ impl<'a> SystemService for WarrenManager<'a> {
             },
             (protocol::RESOURCE_PROTO, protocol::resource::SBRK) => |s: &mut Self, u: &mut UTCB| {
                 handle_call(u, |u| s.brk(pid, u.get_mr(0) as isize))
-            },
-            (protocol::RESOURCE_PROTO, protocol::resource::MMAP) => |s: &mut Self, u: &mut UTCB| {
-                handle_call(u, |u| {
-                    let frame = Frame::from(s.recv);
-                    let addr = u.get_mr(0);
-                    let len = u.get_mr(1);
-                    s.mmap(pid, frame, addr, len)?;
-                    s.ctx.root_cnode.delete(s.recv)
-                })
-            },
-            (protocol::RESOURCE_PROTO, protocol::resource::MUNMAP) => |s: &mut Self, u: &mut UTCB| {
-                handle_call(u, |u| s.munmap(pid, u.get_mr(0), u.get_mr(1)))
             },
             (protocol::RESOURCE_PROTO, protocol::resource::GET_CAP) => |s: &mut Self, u: &mut UTCB| {
                  handle_cap_call(u, |u| {
@@ -164,7 +146,7 @@ impl<'a> SystemService for WarrenManager<'a> {
                     protocol::kernel::SYSCALL => s.handle_syscall(badge.bits(), u.get_mrs()),
                     protocol::kernel::PAGE_FAULT => s.page_fault(badge, mrs[0], mrs[1], mrs[2]),
                     protocol::kernel::ILLEGAL_INSTRUCTION => {
-                        s.illegal_instrution(badge, mrs[0], mrs[1])
+                        s.illegal_instruction(badge, mrs[0], mrs[1])
                     }
                     protocol::kernel::BREAKPOINT => s.breakpoint(badge, mrs[0]),
                     protocol::kernel::ACCESS_FAULT => s.access_fault(badge, mrs[0], mrs[1]),
