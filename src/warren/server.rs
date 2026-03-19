@@ -84,6 +84,16 @@ impl<'a> SystemService for WarrenManager<'a> {
 
         glenda::ipc_dispatch! {
             self, utcb,
+            (protocol::PROCESS_PROTO, protocol::process::CREATE) => |s: &mut Self, u: &mut UTCB| {
+                let name = unsafe { u.read_str()? };
+                handle_call(u, |_| s.create(pid, &name))
+            },
+            (protocol::PROCESS_PROTO, protocol::process::GET_CNODE) => |s: &mut Self, u: &mut UTCB| {
+                handle_cap_call(u, |u| {
+                    let target = u.get_mr(0);
+                    s.get_cnode(pid, target, CapPtr::null()).map(|c| c.cap())
+                })
+            },
             (protocol::PROCESS_PROTO, protocol::process::SPAWN) => |s: &mut Self, u: &mut UTCB| {
                 let name = unsafe {u.read_str()?};
                 handle_call(u, |_| s.spawn(pid, &name))
@@ -93,9 +103,6 @@ impl<'a> SystemService for WarrenManager<'a> {
             },
             (protocol::PROCESS_PROTO, protocol::process::THREAD_CREATE) => |s: &mut Self, u: &mut UTCB| {
                 handle_call(u, |u| s.thread_create(pid, u.get_mr(0), u.get_mr(1), u.get_mr(2), u.get_mr(3)))
-            },
-            (protocol::PROCESS_PROTO, protocol::process::GET_CNODE) => |s: &mut Self, u: &mut UTCB| {
-                handle_cap_call(u, |u| s.get_cnode(pid, Badge::new(u.get_mr(0)), CapPtr::null()).map(|c| c.cap()))
             },
 
             (protocol::RESOURCE_PROTO, protocol::resource::ALLOC) => |s: &mut Self, u: &mut UTCB| {

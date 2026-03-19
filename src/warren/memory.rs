@@ -10,7 +10,7 @@ use glenda::utils::align::align_up;
 impl<'a> WarrenManager<'a> {
     pub fn brk(&mut self, pid: Badge, incr: isize) -> Result<usize, Error> {
         log!("brk: pid: {:?}, incr={:#x}", pid, incr);
-        let process = self.processes.get_mut(&pid).ok_or(Error::NotFound)?;
+        let process = self.processes.get_mut(&pid.bits()).ok_or(Error::NotFound)?;
         let old_brk = process.heap_brk;
         let new_brk = (old_brk as isize + incr) as usize;
 

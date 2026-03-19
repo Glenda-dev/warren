@@ -29,13 +29,17 @@ impl<'a> FaultService for WarrenManager<'a> {
             // due to some race, we might hit here.
             // But usually Warren scratch is handled synchronously.
             error!(
-                "PageFault outside stack: pid: {:?}, tid: {}, address={:#x}, pc={:#x}, cause={:#x}",
-                pid, tid, addr, pc, cause
+                "PageFault outside stack: pid: {}, tid: {}, address={:#x}, pc={:#x}, cause={:#x}",
+                pid.bits(),
+                tid,
+                addr,
+                pc,
+                cause
             );
             return self.exit(pid, 0x0b);
         }
 
-        let process = self.processes.get_mut(&pid).ok_or(Error::NotFound)?;
+        let process = self.processes.get_mut(&pid.bits()).ok_or(Error::NotFound)?;
         let thread = process.threads.get_mut(&tid).ok_or(Error::NotFound)?;
         let allocator = &mut *self.ctx.allocator;
 

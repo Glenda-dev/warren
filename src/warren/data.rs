@@ -4,13 +4,12 @@ use alloc::collections::BTreeMap;
 use alloc::collections::btree_set::BTreeSet;
 use alloc::string::String;
 use glenda::cap::{CNode, CapPtr, Frame, TCB, VSpace};
-use glenda::ipc::Badge;
 use glenda::utils::manager::VSpaceManager;
 
 /// Process Control Block in Warren
 pub struct Process {
-    pub pid: Badge,
-    pub parent_pid: Badge,
+    pub pid: usize,
+    pub parent_pid: usize,
     pub name: String,
 
     // Capabilities
@@ -46,8 +45,8 @@ pub enum ProcessState {
 
 impl Process {
     pub fn new(
-        pid: Badge,
-        parent_pid: Badge,
+        pid: usize,
+        parent_pid: usize,
         name: String,
         tcb: TCB,
         vspace: VSpace,
@@ -58,7 +57,7 @@ impl Process {
         stack_base: usize,
     ) -> Self {
         let mut threads = BTreeMap::new();
-        let main_thread = Thread::new(0, tcb, utcb, stack_base, 0); 
+        let main_thread = Thread::new(0, tcb, utcb, stack_base, 0);
 
         threads.insert(0, main_thread);
 

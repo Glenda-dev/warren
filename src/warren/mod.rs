@@ -9,16 +9,13 @@ mod thread;
 use crate::elf::ElfFile;
 use crate::elf::{PF_W, PF_X, PT_LOAD, PT_TLS};
 use crate::layout::*;
-use crate::policy::{ArenaAllocator, MemoryPolicy};
+use crate::policy::MemoryPolicy;
 use crate::warren::resource::ResourceRegistry;
 use alloc::collections::{BTreeMap, VecDeque};
-use alloc::string::ToString;
 use core::cmp::min;
-use glenda::arch::mem::{KSTACK_PAGES, PGSIZE};
-use glenda::cap::{
-    CNode, CapPtr, CapType, Endpoint, Frame, Kernel, Reply, Rights, TCB, Untyped, VSpace,
-};
-use glenda::cap::{CONSOLE_SLOT, CSPACE_SLOT, MONITOR_SLOT, TCB_SLOT, VSPACE_SLOT};
+use glenda::arch::mem::PGSIZE;
+use glenda::cap::CONSOLE_SLOT;
+use glenda::cap::{CNode, CapPtr, Endpoint, Frame, Kernel, Reply};
 use glenda::error::Error;
 use glenda::interface::{CSpaceService, VSpaceService};
 use glenda::ipc::{Badge, IpcRouter};
@@ -43,8 +40,8 @@ pub struct SystemContext<'a> {
 }
 
 pub struct WarrenManager<'a> {
-    processes: BTreeMap<Badge, Process>,
-    pid: Badge,
+    processes: BTreeMap<usize, Process>,
+    pid: usize,
 
     // Communication
     endpoint: Endpoint,
@@ -52,7 +49,7 @@ pub struct WarrenManager<'a> {
     recv: CapPtr,
 
     // Sync
-    wait_queues: BTreeMap<(Badge, usize), VecDeque<CapPtr>>,
+    wait_queues: BTreeMap<(usize, usize), VecDeque<CapPtr>>,
 
     // Initrd
     initrd: Initrd<'a>,
@@ -92,7 +89,7 @@ impl<'a> WarrenManager<'a> {
 
         Self {
             processes: BTreeMap::new(),
-            pid: Badge::null(),
+            pid: 0,
             endpoint: Endpoint::from(CapPtr::null()),
             reply: Reply::from(CapPtr::null()),
             recv: CapPtr::null(),
@@ -111,166 +108,17 @@ impl<'a> WarrenManager<'a> {
             router: IpcRouter::new(),
         }
     }
-    fn alloc_pid(&mut self) -> Result<Badge, Error> {
-        let next = self.pid.bits().checked_add(1).ok_or(Error::OutOfMemory)?;
-        self.pid = Badge::new(next);
+    fn alloc_pid(&mut self) -> Result<usize, Error> {
+        let next = self.pid.checked_add(1).ok_or(Error::OutOfMemory)?;
+        self.pid = next;
         Ok(self.pid)
     }
-
-    fn create(&mut self, name: &str) -> Result<Process, Error> {
-        let pid = self.alloc_pid()?;
-
-        let utcb_va = get_utcb_va(0);
-        let trapframe_va = get_trapframe_va(0);
-
-        let allocator = &mut *self.ctx.allocator;
-        let cspace_mgr = &mut *self.ctx.cspace_mgr;
-
-        let ep_slot = cspace_mgr.alloc(allocator)?;
-        // Use pid << 16 | tid (0) for the main thread badge
-        let badge = Badge::new(pid.bits() << 16);
-        self.ctx.root_cnode.mint(self.endpoint.cap(), ep_slot, badge, Rights::ALL)?;
-        let child_endpoint = Endpoint::from(ep_slot);
-
-        let cnode_slot = cspace_mgr.alloc(allocator)?;
-        allocator.alloc(CapType::CNode, 0, cnode_slot)?;
-        let child_cnode = CNode::from(cnode_slot);
-
-        let pd_slot = cspace_mgr.alloc(allocator)?;
-        allocator.alloc(CapType::VSpace, 0, pd_slot)?;
-        let child_pd = VSpace::from(pd_slot);
-
-        // 为进程分配 Arena 专用的 CNode 和 CSpaceManager
-        let arena_cnode_slot = cspace_mgr.alloc(allocator)?;
-        allocator.alloc(CapType::CNode, 0, arena_cnode_slot)?;
-        let arena_cnode = CNode::from(arena_cnode_slot);
-
-        // 我们需要手动分配第一个二级 CNode，因为 ArenaAllocator 无法递归分配
-        let mut arena_cspace_mgr = CSpaceManager::new(arena_cnode, 1);
-        let first_l1_slot = CapPtr::concat(arena_cnode.cap(), CapPtr::from(1));
-        allocator.alloc(CapType::CNode, 0, first_l1_slot)?;
-        arena_cspace_mgr.mark_present(1);
-
-        // 从全局分配器预拨一块内存作为 Arena 的根 Untyped
-        let arena_untyped_slot = cspace_mgr.alloc(allocator)?;
-        let arena_size_pages = 256; // 1MB 初始大小
-        let arena_paddr =
-            allocator.alloc(CapType::Untyped, arena_size_pages, arena_untyped_slot)?;
-        let arena_untyped = Untyped::from(arena_untyped_slot);
-
-        let mut arena_allocator = ArenaAllocator::new(
-            arena_cspace_mgr,
-            Some((arena_untyped, arena_paddr, arena_size_pages)),
-            arena_size_pages,
-        );
-
-        let tcb_slot = cspace_mgr.alloc(allocator)?;
-        allocator.alloc(CapType::TCB, 0, tcb_slot)?;
-        let child_tcb = TCB::from(tcb_slot);
-
-        // 使用 Arena 分配 UTCB, TrapFrame 等资源
-        let (_, utcb_slot) = arena_allocator.alloc(1, allocator)?;
-        let child_utcb = Frame::from(utcb_slot);
-
-        let (_, trapframe_slot) = arena_allocator.alloc(1, allocator)?;
-        let child_trapframe = Frame::from(trapframe_slot);
-
-        let (_, stack_slot) = arena_allocator.alloc(1, allocator)?;
-        let child_stack = Frame::from(stack_slot);
-
-        let (_, kstack_slot) = arena_allocator.alloc(KSTACK_PAGES, allocator)?;
-        let child_kstack = Frame::from(kstack_slot);
-
-        let (_, heap_slot) = arena_allocator.alloc(1, allocator)?;
-        let child_heap = Frame::from(heap_slot);
-
-        child_cnode.copy(child_pd.cap(), VSPACE_SLOT, Rights::ALL)?;
-        child_cnode.copy(child_cnode.cap(), CSPACE_SLOT, Rights::ALL)?;
-        child_cnode.copy(child_tcb.cap(), TCB_SLOT, Rights::ALL)?;
-        child_cnode.copy(child_endpoint.cap(), MONITOR_SLOT, Rights::ALL)?;
-        child_cnode.copy(self.res.console_cap, CONSOLE_SLOT, Rights::ALL)?;
-
-        // Child process vspace manager doesn't use scratch area from self, or we can give it one?
-        // For now, pass 0 size to indicate no scratch area.
-        let mut vspace_mgr = VSpaceManager::new(child_pd, SCRATCH_VA, SCRATCH_SIZE);
-        child_tcb.configure(child_cnode, child_pd, child_utcb, child_trapframe, child_kstack)?;
-        // Enable fault handler with badge=pid
-        child_tcb.set_fault_handler(child_endpoint, true)?;
-        child_tcb.set_address(utcb_va, trapframe_va)?;
-        vspace_mgr.map_frame(
-            child_utcb,
-            utcb_va,
-            Perms::READ | Perms::WRITE,
-            1,
-            allocator,
-            cspace_mgr,
-        )?;
-        vspace_mgr.map_frame(
-            child_trapframe,
-            trapframe_va,
-            Perms::READ | Perms::WRITE | Perms::SUPERVISOR,
-            1,
-            allocator,
-            cspace_mgr,
-        )?;
-        vspace_mgr.map_frame(
-            child_stack,
-            STACK_BASE - PGSIZE,
-            Perms::READ | Perms::WRITE,
-            1,
-            allocator,
-            cspace_mgr,
-        )?;
-        vspace_mgr.map_frame(
-            child_heap,
-            HEAP_VA,
-            Perms::READ | Perms::WRITE,
-            1,
-            allocator,
-            cspace_mgr,
-        )?;
-        vspace_mgr.setup(allocator, cspace_mgr)?;
-
-        let mut process = Process::new(
-            pid,
-            Badge::null(),
-            name.to_string(),
-            child_tcb,
-            child_pd,
-            child_cnode,
-            child_utcb,
-            vspace_mgr,
-            arena_allocator,
-            STACK_BASE,
-        );
-        process.heap_start = HEAP_VA;
-        process.heap_brk = HEAP_VA + PGSIZE;
-
-        // 记录在父进程 CSpace 中分配的槽位，以便在进程退出时回收
-        process.allocated_slots.insert(ep_slot);
-        process.allocated_slots.insert(cnode_slot);
-        process.allocated_slots.insert(pd_slot);
-        process.allocated_slots.insert(arena_cnode_slot);
-        process.allocated_slots.insert(arena_untyped_slot);
-
-        {
-            let thread = process.threads.get_mut(&0).unwrap();
-            thread.stack_pages = 1;
-            thread.allocated_slots.insert(tcb_slot);
-            thread.allocated_slots.insert(utcb_slot);
-            thread.allocated_slots.insert(trapframe_slot);
-            thread.allocated_slots.insert(kstack_slot);
-            thread.allocated_slots.insert(stack_slot);
-        }
-
-        process.allocated_slots.insert(cnode_slot);
-        process.allocated_slots.insert(pd_slot);
-        process.allocated_slots.insert(ep_slot);
-        process.allocated_slots.insert(heap_slot);
-        Ok(process)
-    }
-    fn load_elf(&mut self, pid: Badge, elf_data: &[u8]) -> Result<(usize, usize), Error> {
+    fn load_elf(&mut self, pid: usize, elf_data: &[u8]) -> Result<(usize, usize), Error> {
         let elf = ElfFile::new(elf_data).map_err(|_| Error::InvalidArgs)?;
+        if elf.entry_point() == 0 {
+            error!("ELF entry point is 0, aborting load");
+            return Err(Error::InvalidArgs);
+        }
         let mut max_vaddr = 0;
         let process = self.processes.get_mut(&pid).ok_or(Error::NotFound)?;
         let mut _tls = None;
@@ -366,7 +214,7 @@ impl<'a> WarrenManager<'a> {
     }
 
     fn exit_wrapper(&mut self, pid: Badge, code: usize) -> Result<(), Error> {
-        if let Some(mut p) = self.processes.remove(&pid) {
+        if let Some(mut p) = self.processes.remove(&pid.bits()) {
             p.exit_code = code;
             p.state = ProcessState::Dead;
 

@@ -35,6 +35,7 @@ impl<'a> ResourceService for WarrenManager<'a> {
         pages: usize,
         _recv: CapPtr,
     ) -> Result<(usize, Frame), Error> {
+        let pid = pid.bits();
         let p = self.processes.get_mut(&pid).ok_or(Error::NotFound)?;
         let allocator = &mut *self.ctx.allocator;
         let (paddr, slot) = p.arena_allocator.alloc(pages, allocator)?;
@@ -54,6 +55,7 @@ impl<'a> ResourceService for WarrenManager<'a> {
         id: usize,
         _recv: CapPtr,
     ) -> Result<CapPtr, Error> {
+        let pid = pid.bits();
         log!("get_cap: pid: {:?}, type={:?}, id={}", pid, cap_type, id);
         let cptr = match cap_type {
             ResourceType::Kernel => self.res.kernel_cap.cap(),
@@ -76,7 +78,7 @@ impl<'a> ResourceService for WarrenManager<'a> {
                 let allocator = &mut *self.ctx.allocator;
                 let cspace_mgr = &mut *self.ctx.cspace_mgr;
                 let slot = cspace_mgr.alloc(allocator)?;
-                self.ctx.root_cnode.mint(*ep, slot, pid, Rights::ALL)?;
+                self.ctx.root_cnode.mint(*ep, slot, Badge::new(pid), Rights::ALL)?;
                 p.allocated_resources.insert(slot);
                 slot
             }
@@ -93,6 +95,7 @@ impl<'a> ResourceService for WarrenManager<'a> {
         recv: CapPtr,
     ) -> Result<(), Error> {
         log!("register_cap: type={:?}, id={}", cap_type, id);
+        let pid = pid.bits();
         let allocator = &mut *self.ctx.allocator;
         let cspace_mgr = &mut *self.ctx.cspace_mgr;
         let slot = cspace_mgr.alloc(allocator)?;
@@ -114,6 +117,7 @@ impl<'a> ResourceService for WarrenManager<'a> {
         name: &str,
         _recv: CapPtr,
     ) -> Result<(Frame, usize), Error> {
+        let pid = pid.bits();
         log!("get_file: name={}", name);
         let p = self.processes.get_mut(&pid).ok_or(Error::NotFound)?;
         let file = self.initrd.get_file(name).ok_or(Error::NotFound)?;
@@ -143,6 +147,7 @@ impl<'a> ResourceService for WarrenManager<'a> {
 
 impl<'a> WarrenManager<'a> {
     fn do_alloc(&mut self, pid: Badge, obj_type: CapType, flags: usize) -> Result<CapPtr, Error> {
+        let pid = pid.bits();
         let p = self.processes.get_mut(&pid).ok_or(Error::NotFound)?;
         let allocator = &mut *self.ctx.allocator;
         let cspace_mgr = &mut *self.ctx.cspace_mgr;
