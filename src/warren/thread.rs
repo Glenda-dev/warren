@@ -139,7 +139,7 @@ impl<'a> ThreadService for WarrenManager<'a> {
         thread.allocated_slots.insert(utcb_slot);
         thread.allocated_slots.insert(trapframe_slot);
         thread.allocated_slots.insert(kstack_slot);
-        thread.allocated_slots.insert(faulthandler_slot);
+        process.allocated_resources.insert(faulthandler_slot);
 
         process.threads.insert(tid, thread);
 

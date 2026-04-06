@@ -124,7 +124,7 @@ impl<'a> ProcessService for WarrenManager<'a> {
         process.heap_brk = HEAP_VA;
 
         // 记录在父进程 CSpace 中分配的槽位，以便在进程退出时回收
-        process.allocated_slots.insert(ep_slot);
+        process.allocated_resources.insert(ep_slot);
         process.allocated_slots.insert(cnode_slot);
         process.allocated_slots.insert(pd_slot);
         process.allocated_slots.insert(arena_cnode_slot);
@@ -139,9 +139,6 @@ impl<'a> ProcessService for WarrenManager<'a> {
             thread.allocated_slots.insert(kstack_slot);
         }
 
-        process.allocated_slots.insert(cnode_slot);
-        process.allocated_slots.insert(pd_slot);
-        process.allocated_slots.insert(ep_slot);
         process.parent_pid = parent_pid.bits();
         self.processes.insert(pid, process);
         Ok(pid)
@@ -170,10 +167,14 @@ impl<'a> ProcessService for WarrenManager<'a> {
         }
     }
 
+    #[allow(unused)]
     fn exit(&mut self, pid: Badge, code: usize) -> Result<(), Error> {
+        /*
+        panic!("TBD: Fix resource leak on process exit");
         if pid.bits() == 1 {
             panic!("Init process exited with code: {}. Shutting down system.", code);
         }
+        */
         match self.exit_wrapper(pid, code) {
             Ok(_) => {}
             Err(e) => {

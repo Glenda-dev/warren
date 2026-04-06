@@ -22,7 +22,7 @@ impl<'a> FaultService for WarrenManager<'a> {
         let tid = full_badge & 0xFFFF;
 
         // Only handle stack growth
-        if addr < STACK_BASE - MAX_STACK_SIZE || addr >= STACK_BASE {
+        if addr < STACK_BASE - MAX_STACK_SIZE || addr > STACK_BASE {
             // Check if it's a scratch mapping fault (happens during ELF load or other cross-process ops)
             // Warren uses SCRATCH_VA to map child's frames.
             // If we access it before the kernel's PageTable reflects the user-mode mapping, or
@@ -43,21 +43,49 @@ impl<'a> FaultService for WarrenManager<'a> {
         let thread = process.threads.get_mut(&tid).ok_or(Error::NotFound)?;
         let allocator = &mut *self.ctx.allocator;
 
-        // 1. Allocate Frame from process's Arena
-        let (paddr, frame_slot) = process.arena_allocator.alloc(1, allocator)?;
-        log!("Dynamic stack growth for pid {:?}: addr={:#x}, paddr={:#x}", pid, addr, paddr);
-
-        // 2. Map Frame
+        // Calculate how many pages we need to grow
         let page_base = align_down(addr, PGSIZE);
-        let perms = Perms::READ | Perms::WRITE;
-        let frame = Frame::from(frame_slot);
+        let stack_limit = STACK_BASE - thread.stack_pages * PGSIZE;
+
+        if addr >= stack_limit {
+            error!(
+                "PageFault within current stack: pid: {}, tid: {}, address={:#x}, pc={:#x}, cause={:#x}",
+                pid.bits(),
+                tid,
+                addr,
+                pc,
+                cause
+            );
+            return Err(Error::InvalidAddress);
+        }
+
+        let num_pages = (stack_limit - page_base) / PGSIZE;
         let cspace_mgr = &mut *self.ctx.cspace_mgr;
 
-        process.vspace_mgr.map_frame(frame, page_base, perms, 1, allocator, cspace_mgr)?;
+        for i in 0..num_pages {
+            let current_addr = stack_limit - (i + 1) * PGSIZE;
 
-        // 3. Record Resource
-        thread.stack_pages += 1;
-        thread.allocated_slots.insert(frame_slot);
+            // 1. Allocate Frame from process's Arena
+            let (paddr, frame_slot) = process.arena_allocator.alloc(1, allocator)?;
+            log!(
+                "Allocating stack page: pid: {}, tid: {}, vaddr={:#x}, paddr={:#x}, size={:#x}",
+                pid.bits(),
+                tid,
+                current_addr,
+                paddr,
+                PGSIZE
+            );
+            // 2. Map Frame
+            let perms = Perms::READ | Perms::WRITE;
+            let frame = Frame::from(frame_slot);
+
+            process.vspace_mgr.map_frame(frame, current_addr, perms, 1, allocator, cspace_mgr)?;
+
+            // 3. Record Resource
+            thread.stack_pages += 1;
+            thread.allocated_slots.insert(frame_slot);
+        }
+
         Ok(())
     }
     fn unknown_fault(
