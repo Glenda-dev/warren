@@ -216,6 +216,11 @@ impl<'a> WarrenManager<'a> {
 
     fn exit_wrapper(&mut self, pid: Badge, code: usize) -> Result<(), Error> {
         if let Some(mut p) = self.processes.remove(&pid.bits()) {
+            for (tid, thread) in p.threads.iter() {
+                if let Err(e) = thread.tcb.suspend() {
+                    warn!("Failed to suspend thread {} of pid {:?}: {:?}", tid, pid, e);
+                }
+            }
             p.exit_code = code;
             p.state = ProcessState::Dead;
 
@@ -231,11 +236,7 @@ impl<'a> WarrenManager<'a> {
             // Suspend and cleanup threads
             let allocator = &mut *self.ctx.allocator;
             let cspace_mgr = &mut *self.ctx.cspace_mgr;
-            for (tid, thread) in p.threads.iter() {
-                if let Err(e) = thread.tcb.suspend() {
-                    warn!("Failed to suspend thread {} of pid {:?}: {:?}", tid, pid, e);
-                }
-
+            for (_, thread) in p.threads.iter() {
                 // Ensure TCB is recycled before other thread caps so internal refs
                 // (fault_handler/ipc_cap/cspace/vspace caps) are released first.
                 let tcb_slot = thread.tcb.cap();

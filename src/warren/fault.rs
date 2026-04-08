@@ -36,7 +36,8 @@ impl<'a> FaultService for WarrenManager<'a> {
                 pc,
                 cause
             );
-            return self.exit(pid, 0x0b);
+            let _ = self.exit(pid, 0x0b);
+            return Err(Error::Success);
         }
 
         let process = self.processes.get_mut(&pid.bits()).ok_or(Error::NotFound)?;
@@ -100,29 +101,34 @@ impl<'a> FaultService for WarrenManager<'a> {
             "Unhandled fault: pid: {:?}, cause={:#x}, value={:#x}, pc={:#x}. Killing process.\n",
             pid, cause, value, pc
         );
-        self.exit(pid, usize::MAX).map(|_| ())
+        let _ = self.exit(pid, usize::MAX);
+        Err(Error::Success)
     }
     fn access_fault(&mut self, badge: Badge, addr: usize, pc: usize) -> Result<(), Error> {
         let pid = Badge::new(badge.bits() >> 16);
         error!("Access Fault: pid: {:?}, addr={:#x}, pc={:#x}", pid, addr, pc);
-        self.exit(pid, 0x0b).map(|_| ())
+        let _ = self.exit(pid, 0x0b);
+        Err(Error::Success)
     }
     fn access_misaligned(&mut self, badge: Badge, addr: usize, pc: usize) -> Result<(), Error> {
         let pid = Badge::new(badge.bits() >> 16);
         error!("Misaligned Access: pid: {:?}, addr={:#x}, pc={:#x}", pid, addr, pc);
-        self.exit(pid, 0x0b).map(|_| ())
+        let _ = self.exit(pid, 0x0b);
+        Err(Error::Success)
     }
     fn breakpoint(&mut self, badge: Badge, pc: usize) -> Result<(), Error> {
         let pid = Badge::new(badge.bits() >> 16);
         warn!("Breakpoint: pid: {:?}, pc={:#x}", pid, pc);
         // Maybe resume or handled by debugger service
-        self.exit(pid, 0x05).map(|_| ())
+        let _ = self.exit(pid, 0x05);
+        Err(Error::Success)
     }
 
     fn illegal_instruction(&mut self, badge: Badge, inst: usize, pc: usize) -> Result<(), Error> {
         let pid = Badge::new(badge.bits() >> 16);
         error!("Illegal Instruction: pid: {:?}, inst={:#x}, pc={:#x}", pid, inst, pc);
-        self.exit(pid, 0x04).map(|_| ())
+        let _ = self.exit(pid, 0x04);
+        Err(Error::Success)
     }
 
     fn handle_syscall(&mut self, badge: usize, args: glenda::ipc::MsgArgs) -> Result<(), Error> {
@@ -131,6 +137,7 @@ impl<'a> FaultService for WarrenManager<'a> {
             "Non-Native Syscall: pid: {:?}, args=[{},{},{},{},{},{},{},{}]",
             pid, args[0], args[1], args[2], args[3], args[4], args[5], args[6], args[7]
         );
-        self.exit(pid, usize::MAX).map(|_| ())
+        let _ = self.exit(pid, usize::MAX);
+        Err(Error::Success)
     }
 }

@@ -101,6 +101,9 @@ impl<'a> SystemService for WarrenManager<'a> {
             (protocol::PROCESS_PROTO, protocol::process::EXIT) => |s: &mut Self, u: &mut UTCB| {
                 handle_notify(u, |u| s.exit(pid, u.get_mr(0))) // Avoid reply since process is exiting, but indicate success to caller
             },
+            (protocol::PROCESS_PROTO, protocol::process::KILL) => |s: &mut Self, u: &mut UTCB| {
+                handle_call(u, |u| s.kill(pid, u.get_mr(0))) // Avoid reply since process is exiting, but indicate success to caller
+            },
             (protocol::PROCESS_PROTO, protocol::process::THREAD_CREATE) => |s: &mut Self, u: &mut UTCB| {
                 handle_call(u, |u| s.thread_create(pid, u.get_mr(0), u.get_mr(1), u.get_mr(2), u.get_mr(3)))
             },
@@ -162,10 +165,13 @@ impl<'a> SystemService for WarrenManager<'a> {
                     }
                     _ => s.unknown_fault(badge, mrs[0], mrs[1], mrs[2]),
                 };
-                if let Err(e) = res {
-                    panic!("Failed to handle kernel protocol: {:?}", e);
+                match res {
+                    Ok(()) => Ok(()),
+                    // Fatal kernel events (e.g. BREAKPOINT/ACCESS_FAULT after process kill)
+                    // should not send IPC reply, otherwise we may wake a thread that is being torn down.
+                    Err(Error::Success) => Err(Error::Success),
+                    Err(e) => panic!("Failed to handle kernel protocol: {:?}", e),
                 }
-                Ok(())
             },
         }
     }

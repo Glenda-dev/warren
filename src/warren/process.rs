@@ -160,8 +160,7 @@ impl<'a> ProcessService for WarrenManager<'a> {
             }
             Err(e) => {
                 error!("Failed to load ELF for pid {:?} at {}: {:?}", pid, path, e);
-                // FIXME: 解决资源泄露问题
-                //let _ = self.exit_wrapper(Badge::new(pid), 1);
+                let _ = self.exit_wrapper(Badge::new(pid), 1);
                 Err(e)
             }
         }
@@ -177,6 +176,9 @@ impl<'a> ProcessService for WarrenManager<'a> {
         */
         match self.exit_wrapper(pid, code) {
             Ok(_) => {}
+            Err(Error::NotFound) => {
+                warn!("Process not found with pid {}", pid);
+            }
             Err(e) => {
                 error!("Error during exit of pid {:?}: {:?}", pid, e);
             }
