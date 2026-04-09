@@ -163,6 +163,9 @@ impl<'a> SystemService for WarrenManager<'a> {
                     protocol::kernel::ACCESS_MISALIGNED => {
                         s.access_misaligned(badge, mrs[0], mrs[1])
                     }
+                    protocol::kernel::VIRT_EXIT => {
+                        s.virt_exit(badge, mrs[0], mrs[1], mrs[2], mrs[3])
+                    }
                     _ => s.unknown_fault(badge, mrs[0], mrs[1], mrs[2]),
                 };
                 match res {

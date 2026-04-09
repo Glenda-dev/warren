@@ -116,6 +116,22 @@ impl<'a> FaultService for WarrenManager<'a> {
         let _ = self.exit(pid, 0x0b);
         Err(Error::Success)
     }
+    fn virt_exit(
+        &mut self,
+        badge: Badge,
+        reason: usize,
+        detail0: usize,
+        detail1: usize,
+        detail2: usize,
+    ) -> Result<(), Error> {
+        let pid = Badge::new(badge.bits() >> 16);
+        warn!(
+            "Virtualization exit: pid={:?}, reason={:#x}, d0={:#x}, d1={:#x}, d2={:#x}",
+            pid, reason, detail0, detail1, detail2
+        );
+        let _ = self.exit(pid, usize::MAX);
+        Err(Error::Success)
+    }
     fn breakpoint(&mut self, badge: Badge, pc: usize) -> Result<(), Error> {
         let pid = Badge::new(badge.bits() >> 16);
         warn!("Breakpoint: pid: {:?}, pc={:#x}", pid, pc);
