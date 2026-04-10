@@ -13,7 +13,7 @@ use crate::policy::MemoryPolicy;
 use crate::warren::resource::ResourceRegistry;
 use alloc::collections::{BTreeMap, VecDeque};
 use alloc::vec::Vec;
-use core::cmp::{Ordering, min};
+use core::cmp::min;
 use glenda::arch::mem::PGSIZE;
 use glenda::cap::CONSOLE_SLOT;
 use glenda::cap::{CNode, CapPtr, Endpoint, Frame, Kernel, Reply};
@@ -171,7 +171,6 @@ impl<'a> WarrenManager<'a> {
                         global_allocator,
                         cspace_mgr,
                     )?;
-                    process.allocated_slots.insert(frame_cap);
 
                     let scratch_vaddr = self.ctx.vspace_mgr.map_scratch(
                         frame,
@@ -227,72 +226,51 @@ impl<'a> WarrenManager<'a> {
             let sort_cleanup_slots = |slots: Vec<CapPtr>| {
                 let mut ordered = slots;
                 ordered.sort_by(|a, b| {
-                    // Recycle children before parents: deeper cptr first.
+                    // Revoke children before parents: deeper cptr first.
                     b.len().cmp(&a.len()).then_with(|| b.bits().cmp(&a.bits()))
                 });
                 ordered
             };
 
-            // Suspend and cleanup threads
+            // Cleanup VSpace shadow resources first.
             let allocator = &mut *self.ctx.allocator;
             let cspace_mgr = &mut *self.ctx.cspace_mgr;
-            for (_, thread) in p.threads.iter() {
-                // Ensure TCB is recycled before other thread caps so internal refs
-                // (fault_handler/ipc_cap/cspace/vspace caps) are released first.
-                let tcb_slot = thread.tcb.cap();
-                let mut thread_slots: Vec<CapPtr> =
-                    thread.allocated_slots.iter().copied().collect();
-                thread_slots = sort_cleanup_slots(thread_slots);
-                thread_slots.sort_by(|a, b| {
-                    if *a == tcb_slot && *b != tcb_slot {
-                        return Ordering::Less;
-                    }
-                    if *b == tcb_slot && *a != tcb_slot {
-                        return Ordering::Greater;
-                    }
-                    Ordering::Equal
-                });
+            p.vspace_mgr.drop(allocator, cspace_mgr);
 
-                // Recycle thread resources
-                for slot in thread_slots {
-                    if let Err(e) = allocator.free(slot) {
-                        warn!("Failed to recycle thread slot {:?}: {:?}", slot, e);
-                    } else {
-                        cspace_mgr.free(slot);
-                    }
-                }
+            // Return process arena roots to global allocator (buddy merge path).
+            let released_arena_slots = p.arena_allocator.release_to(allocator);
+            for slot in released_arena_slots {
+                p.allocated_slots.remove(&slot);
             }
 
-            // Recycle process resources
+            // Cleanup residual non-arena root slots (bootstrap/meta slots).
             let process_slots: Vec<CapPtr> =
                 sort_cleanup_slots(p.allocated_slots.iter().copied().collect());
             for slot in process_slots {
-                if let Err(e) = allocator.free(slot) {
-                    warn!("Failed to recycle process slot {:?}: {:?}", slot, e);
-                } else {
+                if p.arena_allocator.cspace_mgr.owns_slot(slot) {
+                    continue;
+                }
+
+                if let Err(e) = self.ctx.root_cnode.revoke(slot)
+                    && e != Error::InvalidSlot
+                    && e != Error::InvalidCapability
+                {
+                    warn!("Failed to revoke process slot {:?}: {:?}", slot, e);
+                }
+                let deleted = match self.ctx.root_cnode.delete(slot) {
+                    Ok(()) => true,
+                    Err(e) => {
+                        if e != Error::InvalidSlot && e != Error::InvalidCapability {
+                            warn!("Failed to delete process slot {:?}: {:?}", slot, e);
+                        }
+                        false
+                    }
+                };
+                if deleted && cspace_mgr.owns_slot(slot) {
                     cspace_mgr.free(slot);
                 }
             }
-
-            // Recycle borrowed/shared resource slots (e.g. badged endpoints)
-            // by revoking descendants then deleting the slot.
-            let resource_slots: Vec<CapPtr> =
-                sort_cleanup_slots(p.allocated_resources.iter().copied().collect());
-            for slot in resource_slots {
-                if let Err(e) = self.ctx.root_cnode.revoke(slot) {
-                    warn!("Failed to revoke resource slot {:?}: {:?}", slot, e);
-                }
-                if let Err(e) = self.ctx.root_cnode.delete(slot) {
-                    warn!("Failed to delete resource slot {:?}: {:?}", slot, e);
-                } else {
-                    cspace_mgr.free(slot);
-                }
-            }
-
-            // Recycle VSpace shadow resources
-            p.vspace_mgr.drop(allocator, cspace_mgr);
-
-            log!("Process exited: pid: {:?}, code={}", pid, code);
+            log!("Process exited: pid: {}, code={}", pid, code);
         } else {
             error!("Failed to find process with pid: {:?}", pid);
             return Err(Error::NotFound);

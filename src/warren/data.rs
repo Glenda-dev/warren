@@ -31,8 +31,7 @@ pub struct Process {
     pub heap_brk: usize,
 
     pub image_slots: BTreeSet<CapPtr>, // 记录 ELF 加载时占用的槽位
-    pub allocated_slots: BTreeSet<CapPtr>, // 记录 Warren 为此进程占用的所有槽位
-    pub allocated_resources: BTreeSet<CapPtr>, // 记录 Warren 为此进程分配的所有资源槽位
+    pub allocated_slots: BTreeSet<CapPtr>, // 记录进程级根资源槽位（如 arena 根能力）
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -76,7 +75,6 @@ impl Process {
             heap_start: 0,
             image_slots: BTreeSet::new(),
             allocated_slots: BTreeSet::new(),
-            allocated_resources: BTreeSet::new(),
             heap_brk: 0,
         }
     }

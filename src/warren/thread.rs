@@ -4,7 +4,7 @@ use alloc::collections::btree_set::BTreeSet;
 use glenda::arch::mem::KSTACK_PAGES;
 use glenda::cap::{CapPtr, CapType, Endpoint, Frame, Rights, TCB};
 use glenda::error::Error;
-use glenda::interface::{CSpaceService, ThreadService, VSpaceService};
+use glenda::interface::{ThreadService, VSpaceService};
 use glenda::ipc::Badge;
 use glenda::mem::Perms;
 use glenda::mem::{get_trapframe_va, get_utcb_va};
@@ -77,21 +77,19 @@ impl<'a> ThreadService for WarrenManager<'a> {
         let allocator = &mut *self.ctx.allocator;
         let cspace_mgr = &mut *self.ctx.cspace_mgr;
 
-        // Allocate slots
-        let tcb_slot = cspace_mgr.alloc(allocator)?;
-        allocator.alloc(CapType::TCB, 0, tcb_slot)?;
+        // Allocate slots from process arena
+        let (_, tcb_slot) = process.arena_allocator.alloc_cap(CapType::TCB, 0, allocator)?;
         let tcb = TCB::from(tcb_slot);
 
-        let utcb_slot = cspace_mgr.alloc(allocator)?;
-        allocator.alloc(CapType::Frame, 1, utcb_slot)?;
+        let (_, utcb_slot) = process.arena_allocator.alloc_cap(CapType::Frame, 1, allocator)?;
         let utcb_frame = Frame::from(utcb_slot);
 
-        let trapframe_slot = cspace_mgr.alloc(allocator)?;
-        allocator.alloc(CapType::Frame, 1, trapframe_slot)?;
+        let (_, trapframe_slot) =
+            process.arena_allocator.alloc_cap(CapType::Frame, 1, allocator)?;
         let trapframe = Frame::from(trapframe_slot);
 
-        let kstack_slot = cspace_mgr.alloc(allocator)?;
-        allocator.alloc(CapType::Frame, KSTACK_PAGES, kstack_slot)?;
+        let (_, kstack_slot) =
+            process.arena_allocator.alloc_cap(CapType::Frame, KSTACK_PAGES, allocator)?;
         let kstack = Frame::from(kstack_slot);
 
         // Map UTCB and TrapFrame to unique VAs
@@ -115,9 +113,15 @@ impl<'a> ThreadService for WarrenManager<'a> {
             cspace_mgr,
         )?;
 
-        let faulthandler_slot = cspace_mgr.alloc(allocator)?;
+        let faulthandler_slot = process.arena_allocator.alloc_slot()?;
         let badge = Badge::new((pid << 16) | tid);
-        self.ctx.root_cnode.mint(faulthandler_slot, self.endpoint.cap(), badge, Rights::ALL)?;
+        self.ctx.root_cnode.mint(
+            self.endpoint.cap(),
+            CapPtr::null(),
+            faulthandler_slot,
+            badge,
+            Rights::ALL,
+        )?;
         let fault_ep = Endpoint::from(faulthandler_slot);
 
         // Configure TCB
@@ -139,7 +143,6 @@ impl<'a> ThreadService for WarrenManager<'a> {
         thread.allocated_slots.insert(utcb_slot);
         thread.allocated_slots.insert(trapframe_slot);
         thread.allocated_slots.insert(kstack_slot);
-        process.allocated_resources.insert(faulthandler_slot);
 
         process.threads.insert(tid, thread);
 

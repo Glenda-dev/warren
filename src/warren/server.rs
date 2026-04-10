@@ -6,8 +6,8 @@ use glenda::error::Error;
 use glenda::interface::{
     FaultService, ProcessService, ResourceService, SystemService, ThreadService,
 };
-use glenda::ipc::server::{handle_call, handle_cap_call, handle_notify};
-use glenda::ipc::{Badge, MsgTag, UTCB};
+use glenda::ipc::server::{handle_call, handle_notify};
+use glenda::ipc::{Badge, MsgFlags, MsgTag, UTCB};
 use glenda::protocol;
 use glenda::protocol::resource::{PROCESS_ENDPOINT, RESOURCE_ENDPOINT, ResourceType};
 
@@ -51,6 +51,19 @@ impl<'a> SystemService for WarrenManager<'a> {
                 Ok(()) => {}
                 Err(e) => {
                     if e == Error::Success {
+                        // This path intentionally skips IPC reply (notify-style handling).
+                        // If the sender used CALL, a one-shot Reply cap may still occupy
+                        // our fixed reply slot and keep a stale reference to sender TCB.
+                        if let Err(clean_err) = self.ctx.root_cnode.delete(self.reply.cap())
+                            && clean_err != Error::InvalidCapability
+                            && clean_err != Error::InvalidSlot
+                        {
+                            warn!(
+                                "Failed to cleanup reply slot {:?}: {:?}",
+                                self.reply.cap(),
+                                clean_err
+                            );
+                        }
                         continue;
                     }
                     error!(
@@ -89,9 +102,10 @@ impl<'a> SystemService for WarrenManager<'a> {
                 handle_call(u, |_| s.create(pid, &name))
             },
             (protocol::PROCESS_PROTO, protocol::process::GET_CNODE) => |s: &mut Self, u: &mut UTCB| {
-                handle_cap_call(u, |u| {
+                handle_call(u, |u| {
                     let target = u.get_mr(0);
-                    s.get_cnode(pid, target, CapPtr::null()).map(|c| c.cap())
+                    let recv = CapPtr::from(u.get_mr(1));
+                    s.get_cnode(pid, target, recv).map(|c| c.cap().bits())
                 })
             },
             (protocol::PROCESS_PROTO, protocol::process::SPAWN) => |s: &mut Self, u: &mut UTCB| {
@@ -109,16 +123,18 @@ impl<'a> SystemService for WarrenManager<'a> {
             },
 
             (protocol::RESOURCE_PROTO, protocol::resource::ALLOC) => |s: &mut Self, u: &mut UTCB| {
-                handle_cap_call(u, |u| s.alloc(pid, CapType::from(u.get_mr(0)), u.get_mr(1), CapPtr::null())
-                )
+                handle_call(u, |u| {
+                    let recv = CapPtr::from(u.get_mr(2));
+                    s.alloc(pid, CapType::from(u.get_mr(0)), u.get_mr(1), recv)
+                        .map(|cap| cap.bits())
+                })
             },
             (protocol::RESOURCE_PROTO, protocol::resource::DMA_ALLOC) => |s: &mut Self, u: &mut UTCB| {
-                handle_cap_call(u, |u| s.dma_alloc(pid, u.get_mr(0), CapPtr::null()).map(
-                    |(paddr, frame)|{
-                        u.set_mr(0, paddr);
-                        frame.cap()
-                    })
-                )
+                handle_call(u, |u| {
+                    let pages = u.get_mr(0);
+                    let recv = CapPtr::from(u.get_mr(1));
+                    s.dma_alloc(pid, pages, recv).map(|(paddr, frame)| (paddr, frame.cap().bits()))
+                })
             },
             (protocol::RESOURCE_PROTO, protocol::resource::FREE) => |s: &mut Self, u: &mut UTCB| {
                 handle_call(u, |u| s.free(pid, CapPtr::from(u.get_mr(0))))
@@ -127,28 +143,38 @@ impl<'a> SystemService for WarrenManager<'a> {
                 handle_call(u, |u| s.brk(pid, u.get_mr(0) as isize))
             },
             (protocol::RESOURCE_PROTO, protocol::resource::GET_CAP) => |s: &mut Self, u: &mut UTCB| {
-                 handle_cap_call(u, |u| {
+                 handle_call(u, |u| {
                      let captype_num = u.get_mr(0);
                      let captype = ResourceType::from(captype_num);
                      let id = u.get_mr(1);
-                     s.get_cap(pid, captype, id, CapPtr::null())
+                     let recv = CapPtr::from(u.get_mr(2));
+                     s.get_cap(pid, captype, id, recv).map(|cap| cap.bits())
                  })
             },
             (protocol::RESOURCE_PROTO, protocol::resource::REGISTER_CAP) => |s: &mut Self, u: &mut UTCB| {
                 handle_call(u, |u| {
+                    if !u.get_msg_tag().flags().contains(MsgFlags::HAS_CAP) {
+                        return Err(Error::InvalidArgs);
+                    }
                     let captype_num = u.get_mr(0);
                     let captype = ResourceType::from(captype_num);
                     let id = u.get_mr(1);
-                    let cap = s.recv;
+                    let cap = u.get_recv_window();
                     s.register_cap(pid, captype, id, cap)
                 })
             },
             (protocol::RESOURCE_PROTO, protocol::resource::GET_CONFIG) => |s: &mut Self, u: &mut UTCB| {
-                handle_cap_call(u, |u| {
+                handle_call(u, |u| {
+                    let recv = CapPtr::from(u.get_mr(0));
                     let name = unsafe {u.read_str()?};
-                    let (frame, len) = s.get_config(pid, &name, CapPtr::null())?;
-                    u.set_mr(0, len);
-                    Ok(frame.cap())
+                    s.get_config(pid, &name, recv).map(|(frame, len)| (len, frame.cap().bits()))
+                })
+            },
+            (protocol::RESOURCE_PROTO, protocol::resource::GET_STATUS) => |s: &mut Self, u: &mut UTCB| {
+                handle_call(u, |_| {
+                    s.status(pid).map(|status| {
+                        (status.memory.available_bytes, status.memory.total_bytes)
+                    })
                 })
             },
             (protocol::KERNEL_PROTO, _) => |s: &mut Self, u: &mut UTCB| {

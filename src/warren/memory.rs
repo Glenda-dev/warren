@@ -1,8 +1,8 @@
 use super::WarrenManager;
 use glenda::arch::mem::PGSIZE;
-use glenda::cap::{CapType, Frame};
+use glenda::cap::Frame;
 use glenda::error::Error;
-use glenda::interface::{CSpaceService, VSpaceService};
+use glenda::interface::VSpaceService;
 use glenda::ipc::Badge;
 use glenda::mem::Perms;
 use glenda::utils::align::align_up;
@@ -29,8 +29,7 @@ impl<'a> WarrenManager<'a> {
 
                 let allocator = &mut *self.ctx.allocator;
                 let cspace_mgr = &mut *self.ctx.cspace_mgr;
-                let slot = cspace_mgr.alloc(allocator)?;
-                allocator.alloc(CapType::Frame, pages, slot)?;
+                let (_, slot) = process.arena_allocator.alloc(pages, allocator)?;
                 process.vspace_mgr.map_frame(
                     Frame::from(slot),
                     start_map,

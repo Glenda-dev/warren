@@ -24,124 +24,169 @@ impl<'a> ProcessService for WarrenManager<'a> {
 
         let allocator = &mut *self.ctx.allocator;
         let cspace_mgr = &mut *self.ctx.cspace_mgr;
+        let mut rollback_arena: Option<ArenaAllocator> = None;
+        let mut rollback_arena_cnode_slot: Option<CapPtr> = None;
+        let mut rollback_arena_untyped_slot: Option<CapPtr> = None;
 
-        let ep_slot = cspace_mgr.alloc(allocator)?;
-        // Use pid << 16 | tid (0) for the main thread badge
-        let badge = Badge::new(pid << 16);
-        self.ctx.root_cnode.mint(self.endpoint.cap(), ep_slot, badge, Rights::ALL)?;
-        let child_endpoint = Endpoint::from(ep_slot);
+        let create_result: Result<Process, Error> = (|| {
+            // 为进程分配 Arena 专用的 CNode 和 CSpaceManager
+            let arena_cnode_slot = cspace_mgr.alloc(allocator)?;
+            rollback_arena_cnode_slot = Some(arena_cnode_slot);
+            allocator.alloc(CapType::CNode, 0, arena_cnode_slot)?;
+            let arena_cnode = CNode::from(arena_cnode_slot);
 
-        let cnode_slot = cspace_mgr.alloc(allocator)?;
-        allocator.alloc(CapType::CNode, 0, cnode_slot)?;
-        let child_cnode = CNode::from(cnode_slot);
+            // 我们需要手动分配第一个二级 CNode，因为 ArenaAllocator 无法递归分配
+            let mut arena_cspace_mgr = CSpaceManager::new(arena_cnode, 1);
+            let first_l1_slot = CapPtr::from(1);
 
-        let pd_slot = cspace_mgr.alloc(allocator)?;
-        allocator.alloc(CapType::VSpace, 0, pd_slot)?;
-        let child_pd = VSpace::from(pd_slot);
+            // 从全局分配器预拨一块内存作为 Arena 的根 Untyped
+            let arena_untyped_slot = cspace_mgr.alloc(allocator)?;
+            rollback_arena_untyped_slot = Some(arena_untyped_slot);
+            let arena_size_pages = 256; // 1MB 初始大小
+            let arena_paddr =
+                allocator.alloc(CapType::Untyped, arena_size_pages, arena_untyped_slot)?;
+            let arena_untyped = Untyped::from(arena_untyped_slot);
+            arena_untyped.retype_cnode(arena_cnode.cap(), first_l1_slot)?;
+            arena_cspace_mgr.mark_present(1);
 
-        // 为进程分配 Arena 专用的 CNode 和 CSpaceManager
-        let arena_cnode_slot = cspace_mgr.alloc(allocator)?;
-        allocator.alloc(CapType::CNode, 0, arena_cnode_slot)?;
-        let arena_cnode = CNode::from(arena_cnode_slot);
+            rollback_arena = Some(ArenaAllocator::new(
+                arena_cspace_mgr,
+                Some((arena_untyped, arena_paddr, arena_size_pages)),
+                arena_size_pages,
+            ));
+            rollback_arena_untyped_slot = None;
 
-        // 我们需要手动分配第一个二级 CNode，因为 ArenaAllocator 无法递归分配
-        let mut arena_cspace_mgr = CSpaceManager::new(arena_cnode, 1);
-        let first_l1_slot = CapPtr::concat(arena_cnode.cap(), CapPtr::from(1));
-        allocator.alloc(CapType::CNode, 0, first_l1_slot)?;
-        arena_cspace_mgr.mark_present(1);
+            let arena_allocator = rollback_arena.as_mut().unwrap();
 
-        // 从全局分配器预拨一块内存作为 Arena 的根 Untyped
-        let arena_untyped_slot = cspace_mgr.alloc(allocator)?;
-        let arena_size_pages = 256; // 1MB 初始大小
-        let arena_paddr =
-            allocator.alloc(CapType::Untyped, arena_size_pages, arena_untyped_slot)?;
-        let arena_untyped = Untyped::from(arena_untyped_slot);
+            let ep_slot = arena_allocator.alloc_slot()?;
+            // Use pid << 16 | tid (0) for the main thread badge
+            let badge = Badge::new(pid << 16);
+            self.ctx.root_cnode.mint(
+                self.endpoint.cap(),
+                CapPtr::null(),
+                ep_slot,
+                badge,
+                Rights::ALL,
+            )?;
+            let child_endpoint = Endpoint::from(ep_slot);
 
-        let mut arena_allocator = ArenaAllocator::new(
-            arena_cspace_mgr,
-            Some((arena_untyped, arena_paddr, arena_size_pages)),
-            arena_size_pages,
-        );
+            let (_, cnode_slot) = arena_allocator.alloc_cap(CapType::CNode, 0, allocator)?;
+            let child_cnode = CNode::from(cnode_slot);
 
-        let tcb_slot = cspace_mgr.alloc(allocator)?;
-        allocator.alloc(CapType::TCB, 0, tcb_slot)?;
-        let child_tcb = TCB::from(tcb_slot);
+            let (_, pd_slot) = arena_allocator.alloc_cap(CapType::VSpace, 0, allocator)?;
+            let child_pd = VSpace::from(pd_slot);
 
-        // 使用 Arena 分配 UTCB, TrapFrame 等资源
-        let (_, utcb_slot) = arena_allocator.alloc(1, allocator)?;
-        let child_utcb = Frame::from(utcb_slot);
+            let (_, tcb_slot) = arena_allocator.alloc_cap(CapType::TCB, 0, allocator)?;
+            let child_tcb = TCB::from(tcb_slot);
 
-        let (_, trapframe_slot) = arena_allocator.alloc(1, allocator)?;
-        let child_trapframe = Frame::from(trapframe_slot);
+            // 使用 Arena 分配 UTCB, TrapFrame 等资源
+            let (_, utcb_slot) = arena_allocator.alloc(1, allocator)?;
+            let child_utcb = Frame::from(utcb_slot);
 
-        let (_, kstack_slot) = arena_allocator.alloc(KSTACK_PAGES, allocator)?;
-        let child_kstack = Frame::from(kstack_slot);
+            let (_, trapframe_slot) = arena_allocator.alloc(1, allocator)?;
+            let child_trapframe = Frame::from(trapframe_slot);
 
-        child_cnode.copy(child_pd.cap(), VSPACE_SLOT, Rights::ALL)?;
-        child_cnode.copy(child_cnode.cap(), CSPACE_SLOT, Rights::ALL)?;
-        child_cnode.copy(child_tcb.cap(), TCB_SLOT, Rights::ALL)?;
-        child_cnode.copy(child_endpoint.cap(), MONITOR_SLOT, Rights::ALL)?;
-        child_cnode.copy(self.res.console_cap, CONSOLE_SLOT, Rights::ALL)?;
+            let (_, kstack_slot) = arena_allocator.alloc(KSTACK_PAGES, allocator)?;
+            let child_kstack = Frame::from(kstack_slot);
 
-        // Child process vspace manager doesn't use scratch area from self, or we can give it one?
-        // For now, pass 0 size to indicate no scratch area.
-        let mut vspace_mgr = VSpaceManager::new(child_pd, SCRATCH_VA, SCRATCH_SIZE);
-        child_tcb.configure(child_cnode, child_pd, child_utcb, child_trapframe, child_kstack)?;
-        // Enable fault handler with badge=pid
-        child_tcb.set_fault_handler(child_endpoint, true)?;
-        child_tcb.set_address(utcb_va, trapframe_va)?;
-        vspace_mgr.map_frame(
-            child_utcb,
-            utcb_va,
-            Perms::READ | Perms::WRITE,
-            1,
-            allocator,
-            cspace_mgr,
-        )?;
-        vspace_mgr.map_frame(
-            child_trapframe,
-            trapframe_va,
-            Perms::READ | Perms::WRITE | Perms::SUPERVISOR,
-            1,
-            allocator,
-            cspace_mgr,
-        )?;
-        vspace_mgr.setup(allocator, cspace_mgr)?;
+            child_cnode.copy(child_pd.cap(), CapPtr::null(), VSPACE_SLOT, Rights::ALL)?;
+            child_cnode.copy(child_cnode.cap(), CapPtr::null(), CSPACE_SLOT, Rights::ALL)?;
+            child_cnode.copy(child_tcb.cap(), CapPtr::null(), TCB_SLOT, Rights::ALL)?;
+            child_cnode.copy(child_endpoint.cap(), CapPtr::null(), MONITOR_SLOT, Rights::ALL)?;
+            child_cnode.copy(self.res.console_cap, CapPtr::null(), CONSOLE_SLOT, Rights::ALL)?;
 
-        let mut process = Process::new(
-            pid,
-            parent_pid.bits() >> 16,
-            name.to_string(),
-            child_tcb,
-            child_pd,
-            child_cnode,
-            child_utcb,
-            vspace_mgr,
-            arena_allocator,
-            STACK_BASE,
-        );
-        process.heap_start = HEAP_VA;
-        process.heap_brk = HEAP_VA;
+            // Child process vspace manager doesn't use scratch area from self, or we can give it one?
+            // For now, pass 0 size to indicate no scratch area.
+            let mut vspace_mgr = VSpaceManager::new(child_pd, SCRATCH_VA, SCRATCH_SIZE);
+            child_tcb.configure(
+                child_cnode,
+                child_pd,
+                child_utcb,
+                child_trapframe,
+                child_kstack,
+            )?;
+            // Enable fault handler with badge=pid
+            child_tcb.set_fault_handler(child_endpoint, true)?;
+            child_tcb.set_address(utcb_va, trapframe_va)?;
+            vspace_mgr.map_frame(
+                child_utcb,
+                utcb_va,
+                Perms::READ | Perms::WRITE,
+                1,
+                allocator,
+                cspace_mgr,
+            )?;
+            vspace_mgr.map_frame(
+                child_trapframe,
+                trapframe_va,
+                Perms::READ | Perms::WRITE | Perms::SUPERVISOR,
+                1,
+                allocator,
+                cspace_mgr,
+            )?;
+            vspace_mgr.setup(allocator, cspace_mgr)?;
 
-        // 记录在父进程 CSpace 中分配的槽位，以便在进程退出时回收
-        process.allocated_resources.insert(ep_slot);
-        process.allocated_slots.insert(cnode_slot);
-        process.allocated_slots.insert(pd_slot);
-        process.allocated_slots.insert(arena_cnode_slot);
-        process.allocated_slots.insert(arena_untyped_slot);
+            let mut process = Process::new(
+                pid,
+                parent_pid.bits() >> 16,
+                name.to_string(),
+                child_tcb,
+                child_pd,
+                child_cnode,
+                child_utcb,
+                vspace_mgr,
+                rollback_arena.take().unwrap(),
+                STACK_BASE,
+            );
+            process.heap_start = HEAP_VA;
+            process.heap_brk = HEAP_VA;
 
-        {
-            let thread = process.threads.get_mut(&0).unwrap();
-            thread.stack_pages = 0;
-            thread.allocated_slots.insert(tcb_slot);
-            thread.allocated_slots.insert(utcb_slot);
-            thread.allocated_slots.insert(trapframe_slot);
-            thread.allocated_slots.insert(kstack_slot);
+            // 记录在父进程 CSpace 中分配的槽位，以便在进程退出时回收
+            process.allocated_slots.insert(arena_cnode_slot);
+            process.allocated_slots.insert(arena_untyped_slot);
+
+            {
+                let thread = process.threads.get_mut(&0).unwrap();
+                thread.stack_pages = 0;
+                thread.allocated_slots.insert(tcb_slot);
+                thread.allocated_slots.insert(utcb_slot);
+                thread.allocated_slots.insert(trapframe_slot);
+                thread.allocated_slots.insert(kstack_slot);
+            }
+
+            process.parent_pid = parent_pid.bits();
+            Ok(process)
+        })();
+
+        match create_result {
+            Ok(process) => {
+                self.processes.insert(pid, process);
+                Ok(pid)
+            }
+            Err(e) => {
+                warn!("Process create rollback: pid={}, err={:?}", pid, e);
+
+                if let Some(mut arena_allocator) = rollback_arena.take() {
+                    let _ = arena_allocator.release_to(allocator);
+                }
+
+                if let Some(slot) = rollback_arena_untyped_slot.take()
+                    && allocator.free(slot).is_err()
+                    && cspace_mgr.owns_slot(slot)
+                {
+                    cspace_mgr.free(slot);
+                }
+
+                if let Some(slot) = rollback_arena_cnode_slot.take()
+                    && allocator.free(slot).is_err()
+                    && cspace_mgr.owns_slot(slot)
+                {
+                    cspace_mgr.free(slot);
+                }
+
+                Err(e)
+            }
         }
-
-        process.parent_pid = parent_pid.bits();
-        self.processes.insert(pid, process);
-        Ok(pid)
     }
 
     fn spawn(&mut self, parent_pid: Badge, path: &str) -> Result<usize, Error> {
@@ -166,14 +211,7 @@ impl<'a> ProcessService for WarrenManager<'a> {
         }
     }
 
-    #[allow(unused)]
     fn exit(&mut self, pid: Badge, code: usize) -> Result<(), Error> {
-        /*
-        panic!("TBD: Fix resource leak on process exit");
-        if pid.bits() == 1 {
-            panic!("Init process exited with code: {}. Shutting down system.", code);
-        }
-        */
         match self.exit_wrapper(pid, code) {
             Ok(_) => {}
             Err(Error::NotFound) => {
@@ -183,18 +221,33 @@ impl<'a> ProcessService for WarrenManager<'a> {
                 error!("Error during exit of pid {:?}: {:?}", pid, e);
             }
         }
+        if pid.bits() == 1 {
+            panic!("Init process exited with code: {}. Shutting down system.", code);
+        }
         Ok(())
     }
 
-    fn get_cnode(&mut self, pid: Badge, target: usize, _recv: CapPtr) -> Result<CNode, Error> {
+    fn get_cnode(&mut self, pid: Badge, target: usize, recv: CapPtr) -> Result<CNode, Error> {
         let pid = pid.bits();
         log!("Getting cnode: pid: {}, target: {}", pid, target);
+        let caller_cnode = self.processes.get(&pid).ok_or(Error::NotFound)?.cnode.cap();
         let p = self.processes.get(&target).ok_or(Error::NotFound)?;
         if p.parent_pid != pid {
             return Err(Error::PermissionDenied);
         }
-        let cnode = p.cnode;
-        Ok(cnode)
+        let dst_slot = {
+            if recv.is_null() {
+                CapPtr::null()
+            } else {
+                let rel = CapPtr::relative(caller_cnode, recv);
+                if rel.is_null() { recv } else { rel }
+            }
+        };
+        if dst_slot.is_null() {
+            return Err(Error::InvalidArgs);
+        }
+        self.ctx.root_cnode.copy(p.cnode.cap(), caller_cnode, dst_slot, Rights::ALL)?;
+        Ok(CNode::from(recv))
     }
 
     fn kill(&mut self, pid: Badge, target: usize) -> Result<(), Error> {

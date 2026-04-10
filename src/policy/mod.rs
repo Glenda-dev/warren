@@ -7,6 +7,7 @@ pub use buddy::BuddyAllocator as Allocator;
 use glenda::cap::{CapPtr, Untyped};
 use glenda::error::Error;
 use glenda::interface::{CSpaceProvider, UntypedService, VSpaceProvider};
+use glenda::protocol::resource::MemoryStatus;
 use glenda::utils::BootInfo;
 
 /// The MemoryPolicy trait defines the core interface for memory allocation and capability management
@@ -22,4 +23,6 @@ pub trait MemoryPolicy<'a>: UntypedService + VSpaceProvider + CSpaceProvider {
     fn add_free_slot(&mut self, slots: CapPtr);
 
     fn reserve_count(&self) -> usize;
+
+    fn status(&self) -> MemoryStatus;
 }
