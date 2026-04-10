@@ -29,7 +29,11 @@ impl ArenaAllocator {
     ) -> Self {
         let mut arenas = Vec::new();
         if let Some((untyped, paddr, pages)) = initial_untyped {
-            arenas.push(Arena { untyped, paddr, pages, used_pages: 0 });
+            let used_pages = untyped
+                .get_info()
+                .map(|(_, watermark)| core::cmp::min(watermark, pages))
+                .unwrap_or(0);
+            arenas.push(Arena { untyped, paddr, pages, used_pages });
         }
         Self { cspace_mgr, arenas, arena_size_pages }
     }
