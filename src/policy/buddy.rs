@@ -421,14 +421,33 @@ impl UntypedService for BuddyAllocator {
 
         // If this slot is an explicitly allocated Untyped block, return it to buddy and try merge.
         if let Some((order, paddr, parent, grand_parent)) = self.allocated_untyped.remove(&slot) {
+            // Important: reset this untyped's own watermark before putting it back into buddy lists.
+            // Otherwise a partially consumed block (e.g. watermark=47/256) may be reused as if it were full,
+            // causing subsequent large retype requests to fail with OOM.
+            if let Err(e) = Untyped::from(slot).recycle() {
+                warn!(
+                    "buddy: failed to reset watermark for returned untyped {:?} (order={}, paddr={:#x}): {:?}",
+                    slot, order, paddr, e
+                );
+            }
+            debug!(
+                "buddy: return untyped {:?} order={} paddr={:#x} parent={:?} grand_parent={:?}",
+                slot,
+                order,
+                paddr,
+                parent.map(|p| p.cap()),
+                grand_parent.map(|p| p.cap())
+            );
             self.add_block(Untyped::from(slot), order, paddr, parent, grand_parent);
             return Ok(());
         }
 
         // Non-Untyped capabilities are only slot resources in this policy.
-        let _ = CSPACE_CAP.delete(slot);
-        self.free_slots.push(slot);
-        Ok(())
+        match CSPACE_CAP.delete(slot) {
+            Ok(()) => Ok(()),
+            Err(e) if e == Error::InvalidSlot || e == Error::InvalidCapability => Ok(()),
+            Err(e) => Err(e),
+        }
     }
 }
 

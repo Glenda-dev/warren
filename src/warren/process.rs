@@ -171,17 +171,21 @@ impl<'a> ProcessService for WarrenManager<'a> {
                 }
 
                 if let Some(slot) = rollback_arena_untyped_slot.take()
-                    && allocator.free(slot).is_err()
-                    && cspace_mgr.owns_slot(slot)
+                    && let Err(free_err) = allocator.free(slot)
                 {
-                    cspace_mgr.free(slot);
+                    warn!(
+                        "Process create rollback: failed to free arena untyped slot {:?}: {:?}",
+                        slot, free_err
+                    );
                 }
 
                 if let Some(slot) = rollback_arena_cnode_slot.take()
-                    && allocator.free(slot).is_err()
-                    && cspace_mgr.owns_slot(slot)
+                    && let Err(free_err) = allocator.free(slot)
                 {
-                    cspace_mgr.free(slot);
+                    warn!(
+                        "Process create rollback: failed to free arena cnode slot {:?}: {:?}",
+                        slot, free_err
+                    );
                 }
 
                 Err(e)

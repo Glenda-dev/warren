@@ -107,22 +107,17 @@ impl<'a> ResourceService for WarrenManager<'a> {
         if cap.is_null() {
             return Err(Error::InvalidArgs);
         }
-        log!(
-            "register_cap: pid={:?}, type={:?}, id={}, recv_window={:?}",
-            pid,
-            cap_type,
-            id,
-            cap
-        );
+        log!("register_cap: pid={:?}, type={:?}, id={}, recv_window={:?}", pid, cap_type, id, cap);
 
         let allocator = &mut *self.ctx.allocator;
         let cspace_mgr = &mut *self.ctx.cspace_mgr;
 
         let dst_slot = cspace_mgr.alloc(allocator)?;
         if let Err(e) = self.ctx.root_cnode.transfer(cap, CapPtr::null(), dst_slot) {
-            if cspace_mgr.owns_slot(dst_slot) {
-                cspace_mgr.free(dst_slot);
-            }
+            warn!(
+                "register_cap: transfer into {:?} failed, skip slot recycle to avoid alias: {:?}",
+                dst_slot, e
+            );
             return Err(e);
         }
 
@@ -140,8 +135,15 @@ impl<'a> ResourceService for WarrenManager<'a> {
             }
             _ => {
                 let _ = self.ctx.root_cnode.revoke(dst_slot);
-                let _ = self.ctx.root_cnode.delete(dst_slot);
-                if cspace_mgr.owns_slot(dst_slot) {
+                let deleted_or_empty = match self.ctx.root_cnode.delete(dst_slot) {
+                    Ok(()) => true,
+                    Err(e) if e == Error::InvalidSlot || e == Error::InvalidCapability => true,
+                    Err(e) => {
+                        warn!("register_cap: cleanup delete failed for {:?}: {:?}", dst_slot, e);
+                        false
+                    }
+                };
+                if deleted_or_empty && cspace_mgr.owns_slot(dst_slot) {
                     cspace_mgr.free(dst_slot);
                 }
                 Err(Error::InvalidArgs)

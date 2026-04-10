@@ -239,6 +239,11 @@ impl<'a> WarrenManager<'a> {
 
             // Return process arena roots to global allocator (buddy merge path).
             let released_arena_slots = p.arena_allocator.release_to(allocator);
+            debug!(
+                "exit: pid={} released {} arena root untyped caps",
+                pid.bits(),
+                released_arena_slots.len()
+            );
             for slot in released_arena_slots {
                 p.allocated_slots.remove(&slot);
             }
