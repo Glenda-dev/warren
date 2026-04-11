@@ -205,6 +205,15 @@ impl<'a> SystemService for WarrenManager<'a> {
                     Err(e) => panic!("Failed to handle kernel protocol: {:?}", e),
                 }
             },
+            (_, _) => |_, u: &mut UTCB| {
+                error!(
+                    "Unknown request: badge={}, proto={:#x}, label={:#x}",
+                    badge,
+                    u.get_msg_tag().proto(),
+                    u.get_msg_tag().label()
+                );
+                Err(Error::NotSupported)
+            }
         }
     }
 
