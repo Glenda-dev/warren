@@ -183,16 +183,10 @@ impl ArenaAllocator {
 
         for arena in arenas {
             let cap = arena.untyped.cap();
-            debug!(
-                "arena: releasing root untyped {:?} paddr={:#x} pages={} used_pages={}",
-                cap, arena.paddr, arena.pages, arena.used_pages
-            );
             if let Err(e) = untyped_service.free(cap) {
                 warn!("arena: failed to return untyped {:?}: {:?}", cap, e);
                 let _ = CSPACE_CAP.revoke(cap);
                 let _ = CSPACE_CAP.delete(cap);
-            } else {
-                debug!("arena: returned root untyped {:?} successfully", cap);
             }
             released.push(cap);
         }

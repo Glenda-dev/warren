@@ -1,5 +1,6 @@
 use super::thread::Thread;
 use crate::policy::ArenaAllocator;
+use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::collections::btree_set::BTreeSet;
 use alloc::string::String;
@@ -25,7 +26,7 @@ pub struct Process {
     pub exit_code: usize,
     // Manage process mappings
     pub vspace_mgr: VSpaceManager,
-    pub arena_allocator: ArenaAllocator,
+    pub arena_allocator: Box<ArenaAllocator>,
 
     pub heap_start: usize,
     pub heap_brk: usize,
@@ -52,7 +53,7 @@ impl Process {
         cnode: CNode,
         utcb: Frame,
         vspace_mgr: VSpaceManager,
-        arena_allocator: ArenaAllocator,
+        arena_allocator: Box<ArenaAllocator>,
         stack_base: usize,
     ) -> Self {
         let mut threads = BTreeMap::new();

@@ -70,7 +70,7 @@ impl<'a> ThreadService for WarrenManager<'a> {
     ) -> Result<usize, Error> {
         let pid = pid.bits();
         log!("Creating thread for pid: {:?}", pid);
-        let process = self.processes.get_mut(&pid).ok_or(Error::NotFound)?;
+        let process = self.state.processes.get_mut(&pid).ok_or(Error::NotFound)?;
         let tid = process.next_tid;
         process.next_tid += 1;
 
@@ -116,7 +116,7 @@ impl<'a> ThreadService for WarrenManager<'a> {
         let faulthandler_slot = process.arena_allocator.alloc_slot()?;
         let badge = Badge::new((pid << 16) | tid);
         self.ctx.root_cnode.mint(
-            self.endpoint.cap(),
+            self.ipc.endpoint.cap(),
             CapPtr::null(),
             faulthandler_slot,
             badge,

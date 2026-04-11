@@ -15,8 +15,8 @@ use alloc::collections::{BTreeMap, VecDeque};
 use alloc::vec::Vec;
 use core::cmp::min;
 use glenda::arch::mem::PGSIZE;
-use glenda::cap::CONSOLE_SLOT;
 use glenda::cap::{CNode, CapPtr, Endpoint, Frame, Kernel, Reply};
+use glenda::cap::{CONSOLE_SLOT, CSPACE_CAP};
 use glenda::error::Error;
 use glenda::interface::{CSpaceService, VSpaceService};
 use glenda::ipc::{Badge, IpcRouter};
@@ -40,27 +40,29 @@ pub struct SystemContext<'a> {
     pub root_cnode: CNode,
 }
 
+pub struct WarrenState {
+    pub processes: BTreeMap<usize, Process>,
+    pub pid: usize,
+    pub wait_queues: BTreeMap<(usize, usize), VecDeque<CapPtr>>,
+    pub res: ResourceRegistry,
+}
+
+pub struct WarrenIpc {
+    pub endpoint: Endpoint,
+    pub reply: Reply,
+    pub recv: CapPtr,
+    pub running: bool,
+}
+
 pub struct WarrenManager<'a> {
-    processes: BTreeMap<usize, Process>,
-    pid: usize,
-
-    // Communication
-    endpoint: Endpoint,
-    reply: Reply,
-    recv: CapPtr,
-
-    // Sync
-    wait_queues: BTreeMap<(usize, usize), VecDeque<CapPtr>>,
+    state: WarrenState,
+    ipc: WarrenIpc,
 
     // Initrd
     initrd: Initrd<'a>,
 
-    // Resources
-    res: ResourceRegistry,
-
     // Context
     ctx: SystemContext<'a>,
-    running: bool,
     router: IpcRouter<WarrenManager<'a>>,
 }
 
@@ -89,30 +91,34 @@ impl<'a> WarrenManager<'a> {
         vspace_mgr.mark_existing(TRAMPOLINE_VA, PGSIZE);
 
         Self {
-            processes: BTreeMap::new(),
-            pid: 0,
-            endpoint: Endpoint::from(CapPtr::null()),
-            reply: Reply::from(CapPtr::null()),
-            recv: CapPtr::null(),
-            wait_queues: BTreeMap::new(),
-            initrd,
-            res: ResourceRegistry {
-                kernel_cap: Kernel::from(KERNEL_SLOT),
-                irq_cap: IRQ_CONTROL_SLOT,
-                console_cap: CONSOLE_SLOT,
-                untyped_cap: UNTYPED_SLOT,
-                bootinfo_cap: BOOTINFO_SLOT,
-                endpoints: BTreeMap::new(),
+            state: WarrenState {
+                processes: BTreeMap::new(),
+                pid: 0,
+                wait_queues: BTreeMap::new(),
+                res: ResourceRegistry {
+                    kernel_cap: Kernel::from(KERNEL_SLOT),
+                    irq_cap: IRQ_CONTROL_SLOT,
+                    console_cap: CONSOLE_SLOT,
+                    untyped_cap: UNTYPED_SLOT,
+                    bootinfo_cap: BOOTINFO_SLOT,
+                    endpoints: BTreeMap::new(),
+                },
             },
+            ipc: WarrenIpc {
+                endpoint: Endpoint::from(CapPtr::null()),
+                reply: Reply::from(CapPtr::null()),
+                recv: CapPtr::null(),
+                running: false,
+            },
+            initrd,
             ctx: SystemContext { vspace_mgr, cspace_mgr, allocator, root_cnode },
-            running: false,
             router: IpcRouter::new(),
         }
     }
     fn alloc_pid(&mut self) -> Result<usize, Error> {
-        let next = self.pid.checked_add(1).ok_or(Error::OutOfMemory)?;
-        self.pid = next;
-        Ok(self.pid)
+        let next = self.state.pid.checked_add(1).ok_or(Error::OutOfMemory)?;
+        self.state.pid = next;
+        Ok(self.state.pid)
     }
     fn load_elf(&mut self, pid: usize, elf_data: &[u8]) -> Result<(usize, usize), Error> {
         let elf = ElfFile::new(elf_data).map_err(|_| Error::InvalidArgs)?;
@@ -121,7 +127,7 @@ impl<'a> WarrenManager<'a> {
             return Err(Error::InvalidArgs);
         }
         let mut max_vaddr = 0;
-        let process = self.processes.get_mut(&pid).ok_or(Error::NotFound)?;
+        let process = self.state.processes.get_mut(&pid).ok_or(Error::NotFound)?;
         let mut _tls = None;
         for phdr in elf.program_headers() {
             let type_ = phdr.p_type as usize;
@@ -214,7 +220,8 @@ impl<'a> WarrenManager<'a> {
     }
 
     fn exit_wrapper(&mut self, pid: Badge, code: usize) -> Result<(), Error> {
-        if let Some(mut p) = self.processes.remove(&pid.bits()) {
+        CSPACE_CAP.delete(self.ipc.reply.cap())?;
+        if let Some(mut p) = self.state.processes.remove(&pid.bits()) {
             for (tid, thread) in p.threads.iter() {
                 if let Err(e) = thread.tcb.suspend() {
                     warn!("Failed to suspend thread {} of pid {:?}: {:?}", tid, pid, e);
@@ -239,11 +246,7 @@ impl<'a> WarrenManager<'a> {
 
             // Return process arena roots to global allocator (buddy merge path).
             let released_arena_slots = p.arena_allocator.release_to(allocator);
-            debug!(
-                "exit: pid={} released {} arena root untyped caps",
-                pid.bits(),
-                released_arena_slots.len()
-            );
+
             for slot in released_arena_slots {
                 p.allocated_slots.remove(&slot);
             }

@@ -36,7 +36,7 @@ impl<'a> ResourceService for WarrenManager<'a> {
         recv: CapPtr,
     ) -> Result<(usize, Frame), Error> {
         let pid = pid.bits();
-        let p = self.processes.get_mut(&pid).ok_or(Error::NotFound)?;
+        let p = self.state.processes.get_mut(&pid).ok_or(Error::NotFound)?;
         let allocator = &mut *self.ctx.allocator;
         let paddr = p.arena_allocator.alloc_into(pages, p.cnode.cap(), recv, allocator)?;
         log!("dma_alloc: pid: {:?}, paddr={:#x}, pages={}", pid, paddr, pages);
@@ -57,7 +57,7 @@ impl<'a> ResourceService for WarrenManager<'a> {
         let pid = pid.bits();
         log!("get_cap: pid: {:?}, type={:?}, id={}", pid, cap_type, id);
         let proc_cnode = {
-            let p = self.processes.get(&pid).ok_or(Error::NotFound)?;
+            let p = self.state.processes.get(&pid).ok_or(Error::NotFound)?;
             p.cnode.cap()
         };
         let dst_abs = CapPtr::concat(proc_cnode, recv);
@@ -65,29 +65,44 @@ impl<'a> ResourceService for WarrenManager<'a> {
         match cap_type {
             ResourceType::Kernel => {
                 self.ctx.root_cnode.copy(
-                    self.res.kernel_cap.cap(),
+                    self.state.res.kernel_cap.cap(),
                     proc_cnode,
                     recv,
                     Rights::ALL,
                 )?;
             }
             ResourceType::Untyped => {
-                self.ctx.root_cnode.copy(self.res.untyped_cap, proc_cnode, recv, Rights::ALL)?;
+                self.ctx.root_cnode.copy(
+                    self.state.res.untyped_cap,
+                    proc_cnode,
+                    recv,
+                    Rights::ALL,
+                )?;
             }
             ResourceType::Irq => {
-                self.res.kernel_cap.get_irq(id, dst_abs)?;
+                self.state.res.kernel_cap.get_irq(id, dst_abs)?;
             }
             ResourceType::IrqControl => {
-                self.ctx.root_cnode.copy(self.res.irq_cap, proc_cnode, recv, Rights::ALL)?;
+                self.ctx.root_cnode.copy(self.state.res.irq_cap, proc_cnode, recv, Rights::ALL)?;
             }
             ResourceType::Console => {
-                self.ctx.root_cnode.copy(self.res.console_cap, proc_cnode, recv, Rights::ALL)?;
+                self.ctx.root_cnode.copy(
+                    self.state.res.console_cap,
+                    proc_cnode,
+                    recv,
+                    Rights::ALL,
+                )?;
             }
             ResourceType::Bootinfo => {
-                self.ctx.root_cnode.copy(self.res.bootinfo_cap, proc_cnode, recv, Rights::ALL)?;
+                self.ctx.root_cnode.copy(
+                    self.state.res.bootinfo_cap,
+                    proc_cnode,
+                    recv,
+                    Rights::ALL,
+                )?;
             }
             ResourceType::Endpoint => {
-                let ep = self.res.endpoints.get(&id).ok_or(Error::NotFound)?;
+                let ep = self.state.res.endpoints.get(&id).ok_or(Error::NotFound)?;
                 self.ctx.root_cnode.mint(*ep, proc_cnode, recv, Badge::new(pid), Rights::ALL)?;
             }
             _ => return Err(Error::InvalidArgs),
@@ -103,7 +118,7 @@ impl<'a> ResourceService for WarrenManager<'a> {
         cap: CapPtr,
     ) -> Result<(), Error> {
         let pid = pid.bits();
-        let _ = self.processes.get(&pid).ok_or(Error::NotFound)?;
+        let _ = self.state.processes.get(&pid).ok_or(Error::NotFound)?;
         if cap.is_null() {
             return Err(Error::InvalidArgs);
         }
@@ -123,7 +138,7 @@ impl<'a> ResourceService for WarrenManager<'a> {
 
         match cap_type {
             ResourceType::Endpoint => {
-                if let Some(old_slot) = self.res.endpoints.insert(id, dst_slot)
+                if let Some(old_slot) = self.state.res.endpoints.insert(id, dst_slot)
                     && cspace_mgr.owns_slot(old_slot)
                 {
                     let _ = self.ctx.root_cnode.revoke(old_slot);
@@ -159,7 +174,7 @@ impl<'a> ResourceService for WarrenManager<'a> {
     ) -> Result<(Frame, usize), Error> {
         let pid = pid.bits();
         log!("get_file: name={}", name);
-        let p = self.processes.get_mut(&pid).ok_or(Error::NotFound)?;
+        let p = self.state.processes.get_mut(&pid).ok_or(Error::NotFound)?;
         let file = self.initrd.get_file(name).ok_or(Error::NotFound)?;
         let len = file.len();
         let pages = align_up(len, PGSIZE) / PGSIZE;
@@ -197,7 +212,7 @@ impl<'a> WarrenManager<'a> {
         recv: CapPtr,
     ) -> Result<CapPtr, Error> {
         let pid = pid.bits();
-        let p = self.processes.get_mut(&pid).ok_or(Error::NotFound)?;
+        let p = self.state.processes.get_mut(&pid).ok_or(Error::NotFound)?;
         let allocator = &mut *self.ctx.allocator;
         p.arena_allocator.alloc_cap_into(obj_type, flags, p.cnode.cap(), recv, allocator)?;
         log!("alloc: pid: {:?}, type={:?}, flags={:#x}", pid, obj_type, flags);

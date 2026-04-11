@@ -40,7 +40,7 @@ impl<'a> FaultService for WarrenManager<'a> {
             return Err(Error::Success);
         }
 
-        let process = self.processes.get_mut(&pid.bits()).ok_or(Error::NotFound)?;
+        let process = self.state.processes.get_mut(&pid.bits()).ok_or(Error::NotFound)?;
         let thread = process.threads.get_mut(&tid).ok_or(Error::NotFound)?;
         let allocator = &mut *self.ctx.allocator;
 

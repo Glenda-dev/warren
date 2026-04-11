@@ -13,30 +13,33 @@ use glenda::protocol::resource::{PROCESS_ENDPOINT, RESOURCE_ENDPOINT, ResourceTy
 
 impl<'a> SystemService for WarrenManager<'a> {
     fn init(&mut self) -> Result<(), Error> {
-        self.res.endpoints.insert(PROCESS_ENDPOINT, MONITOR_SLOT);
-        self.res.endpoints.insert(RESOURCE_ENDPOINT, MONITOR_SLOT);
+        self.state.res.endpoints.insert(PROCESS_ENDPOINT, MONITOR_SLOT);
+        self.state.res.endpoints.insert(RESOURCE_ENDPOINT, MONITOR_SLOT);
         self.spawn(Badge::null(), INIT_NAME).map(|pid| {
             log!("Started init {} with pid: {:?}", INIT_NAME, pid);
         })
     }
     fn listen(&mut self, ep: Endpoint, reply: CapPtr, recv: CapPtr) -> Result<(), Error> {
-        self.endpoint = ep;
-        self.reply = Reply::from(reply);
-        self.recv = recv;
+        self.ipc.endpoint = ep;
+        self.ipc.reply = Reply::from(reply);
+        self.ipc.recv = recv;
         Ok(())
     }
     fn run(&mut self) -> Result<(), Error> {
-        if self.endpoint.cap().is_null() || self.reply.cap().is_null() || self.recv.is_null() {
+        if self.ipc.endpoint.cap().is_null()
+            || self.ipc.reply.cap().is_null()
+            || self.ipc.recv.is_null()
+        {
             return Err(Error::NotInitialized);
         }
-        self.running = true;
-        while self.running {
+        self.ipc.running = true;
+        while self.ipc.running {
             self.refill_allocator();
             let mut utcb = unsafe { UTCB::new() };
             utcb.clear();
-            utcb.set_reply_window(self.reply.cap());
-            utcb.set_recv_window(self.recv);
-            match self.endpoint.recv(&mut utcb) {
+            utcb.set_reply_window(self.ipc.reply.cap());
+            utcb.set_recv_window(self.ipc.recv);
+            match self.ipc.endpoint.recv(&mut utcb) {
                 Ok(b) => b,
                 Err(e) => {
                     error!("Recv error: {:?}", e);
@@ -54,13 +57,13 @@ impl<'a> SystemService for WarrenManager<'a> {
                         // This path intentionally skips IPC reply (notify-style handling).
                         // If the sender used CALL, a one-shot Reply cap may still occupy
                         // our fixed reply slot and keep a stale reference to sender TCB.
-                        if let Err(clean_err) = self.ctx.root_cnode.delete(self.reply.cap())
+                        if let Err(clean_err) = self.ctx.root_cnode.delete(self.ipc.reply.cap())
                             && clean_err != Error::InvalidCapability
                             && clean_err != Error::InvalidSlot
                         {
                             warn!(
                                 "Failed to cleanup reply slot {:?}: {:?}",
-                                self.reply.cap(),
+                                self.ipc.reply.cap(),
                                 clean_err
                             );
                         }
@@ -206,9 +209,9 @@ impl<'a> SystemService for WarrenManager<'a> {
     }
 
     fn reply(&mut self, utcb: &mut UTCB) -> Result<(), Error> {
-        self.reply.reply(utcb)
+        self.ipc.reply.reply(utcb)
     }
     fn stop(&mut self) {
-        self.running = false;
+        self.ipc.running = false;
     }
 }

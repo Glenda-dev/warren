@@ -2,6 +2,7 @@ use super::WarrenManager;
 use super::data::Process;
 use crate::layout::*;
 use crate::policy::ArenaAllocator;
+use alloc::boxed::Box;
 use alloc::string::ToString;
 use glenda::arch::mem::KSTACK_PAGES;
 use glenda::cap::{CNode, CapPtr, CapType, Endpoint, Frame, Rights, TCB, Untyped, VSpace};
@@ -24,7 +25,7 @@ impl<'a> ProcessService for WarrenManager<'a> {
 
         let allocator = &mut *self.ctx.allocator;
         let cspace_mgr = &mut *self.ctx.cspace_mgr;
-        let mut rollback_arena: Option<ArenaAllocator> = None;
+        let mut rollback_arena: Option<Box<ArenaAllocator>> = None;
         let mut rollback_arena_cnode_slot: Option<CapPtr> = None;
         let mut rollback_arena_untyped_slot: Option<CapPtr> = None;
 
@@ -49,11 +50,11 @@ impl<'a> ProcessService for WarrenManager<'a> {
             arena_untyped.retype_cnode(arena_cnode.cap(), first_l1_slot)?;
             arena_cspace_mgr.mark_present(1);
 
-            rollback_arena = Some(ArenaAllocator::new(
+            rollback_arena = Some(Box::new(ArenaAllocator::new(
                 arena_cspace_mgr,
                 Some((arena_untyped, arena_paddr, arena_size_pages)),
                 arena_size_pages,
-            ));
+            )));
             rollback_arena_untyped_slot = None;
 
             let arena_allocator = rollback_arena.as_mut().unwrap();
@@ -62,7 +63,7 @@ impl<'a> ProcessService for WarrenManager<'a> {
             // Use pid << 16 | tid (0) for the main thread badge
             let badge = Badge::new(pid << 16);
             self.ctx.root_cnode.mint(
-                self.endpoint.cap(),
+                self.ipc.endpoint.cap(),
                 CapPtr::null(),
                 ep_slot,
                 badge,
@@ -93,7 +94,12 @@ impl<'a> ProcessService for WarrenManager<'a> {
             child_cnode.copy(child_cnode.cap(), CapPtr::null(), CSPACE_SLOT, Rights::ALL)?;
             child_cnode.copy(child_tcb.cap(), CapPtr::null(), TCB_SLOT, Rights::ALL)?;
             child_cnode.copy(child_endpoint.cap(), CapPtr::null(), MONITOR_SLOT, Rights::ALL)?;
-            child_cnode.copy(self.res.console_cap, CapPtr::null(), CONSOLE_SLOT, Rights::ALL)?;
+            child_cnode.copy(
+                self.state.res.console_cap,
+                CapPtr::null(),
+                CONSOLE_SLOT,
+                Rights::ALL,
+            )?;
 
             // Child process vspace manager doesn't use scratch area from self, or we can give it one?
             // For now, pass 0 size to indicate no scratch area.
@@ -160,7 +166,7 @@ impl<'a> ProcessService for WarrenManager<'a> {
 
         match create_result {
             Ok(process) => {
-                self.processes.insert(pid, process);
+                self.state.processes.insert(pid, process);
                 Ok(pid)
             }
             Err(e) => {
@@ -199,7 +205,7 @@ impl<'a> ProcessService for WarrenManager<'a> {
         log!("Spawning process: {}, pid: {}, parent_pid: {:?}", path, pid, parent_pid);
         match self.load_elf(pid, &file) {
             Ok((entry, _)) => {
-                let process = self.processes.get_mut(&pid).unwrap();
+                let process = self.state.processes.get_mut(&pid).unwrap();
                 let thread = process.threads.get_mut(&0).unwrap();
                 thread.tcb.set_entrypoint(entry, STACK_BASE, 0)?;
                 thread.tcb.set_address(get_utcb_va(0), get_trapframe_va(0))?;
@@ -234,8 +240,8 @@ impl<'a> ProcessService for WarrenManager<'a> {
     fn get_cnode(&mut self, pid: Badge, target: usize, recv: CapPtr) -> Result<CNode, Error> {
         let pid = pid.bits();
         log!("Getting cnode: pid: {}, target: {}", pid, target);
-        let caller_cnode = self.processes.get(&pid).ok_or(Error::NotFound)?.cnode.cap();
-        let p = self.processes.get(&target).ok_or(Error::NotFound)?;
+        let caller_cnode = self.state.processes.get(&pid).ok_or(Error::NotFound)?.cnode.cap();
+        let p = self.state.processes.get(&target).ok_or(Error::NotFound)?;
         if p.parent_pid != pid {
             return Err(Error::PermissionDenied);
         }
@@ -256,7 +262,7 @@ impl<'a> ProcessService for WarrenManager<'a> {
 
     fn kill(&mut self, pid: Badge, target: usize) -> Result<(), Error> {
         let pid = pid.bits();
-        if let Some(target_proc) = self.processes.get(&target) {
+        if let Some(target_proc) = self.state.processes.get(&target) {
             // Allow self-kill or parent-kill
             if target_proc.parent_pid != pid && pid != target {
                 log!("Permission denied for kill: pid {:?} tried to kill target {:?}", pid, target);

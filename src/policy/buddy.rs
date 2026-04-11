@@ -95,14 +95,6 @@ impl<'a> MemoryPolicy<'a> for BuddyAllocator {
             }
         }
 
-        debug!(
-            "buddy: init complete, free_slots={} total_blocks={} largest_order={:?} allocated_untyped={}",
-            self.free_slots.len(),
-            self.total_free_blocks(),
-            self.largest_non_empty_order(),
-            self.allocated_untyped.len()
-        );
-
         Ok(())
     }
 
@@ -153,25 +145,6 @@ impl BuddyAllocator {
 
     fn largest_non_empty_order(&self) -> Option<usize> {
         (MIN_ORDER..=MAX_ORDER).rev().find(|&order| !self.free_lists[order].is_empty())
-    }
-
-    fn dump_allocator_state(&self, reason: &str, req_order: usize) {
-        debug!(
-            "buddy: state reason={} req_order={} free_slots={} total_blocks={} largest_order={:?} allocated_untyped={}",
-            reason,
-            req_order,
-            self.free_slots.len(),
-            self.total_free_blocks(),
-            self.largest_non_empty_order(),
-            self.allocated_untyped.len()
-        );
-
-        for order in MIN_ORDER..=MAX_ORDER {
-            let blocks = self.free_lists[order].len();
-            if blocks > 0 {
-                debug!("buddy: free_list order={} blocks={}", order, blocks);
-            }
-        }
     }
 
     pub fn add_block(
@@ -312,7 +285,6 @@ impl BuddyAllocator {
                 // Each split depth (i - order) needs 2 slots.
                 let slots_needed = (i - order) * 2;
                 if self.free_slots.len() < slots_needed {
-                    self.dump_allocator_state("split-no-slots", order);
                     error!(
                         "BuddyAllocator: Not enough free slots to split untyped block of order {}: needed {}, available {}",
                         i,
@@ -364,7 +336,6 @@ impl BuddyAllocator {
                 return Ok((current_cap, current_paddr, current_parent, current_grand_parent));
             }
         }
-        self.dump_allocator_state("no-free-block", order);
         Err(Error::OutOfMemory)
     }
 }
@@ -430,14 +401,6 @@ impl UntypedService for BuddyAllocator {
                     slot, order, paddr, e
                 );
             }
-            debug!(
-                "buddy: return untyped {:?} order={} paddr={:#x} parent={:?} grand_parent={:?}",
-                slot,
-                order,
-                paddr,
-                parent.map(|p| p.cap()),
-                grand_parent.map(|p| p.cap())
-            );
             self.add_block(Untyped::from(slot), order, paddr, parent, grand_parent);
             return Ok(());
         }
