@@ -67,15 +67,7 @@ impl<'a> FaultService for WarrenManager<'a> {
             let current_addr = stack_limit - (i + 1) * PGSIZE;
 
             // 1. Allocate Frame from process's Arena
-            let (paddr, frame_slot) = process.arena_allocator.alloc(1, allocator)?;
-            log!(
-                "Allocating stack page: pid: {}, tid: {}, vaddr={:#x}, paddr={:#x}, size={:#x}",
-                pid.bits(),
-                tid,
-                current_addr,
-                paddr,
-                PGSIZE
-            );
+            let (_, frame_slot) = process.arena_allocator.alloc(1, allocator)?;
             // 2. Map Frame
             let perms = Perms::READ | Perms::WRITE;
             let frame = Frame::from(frame_slot);

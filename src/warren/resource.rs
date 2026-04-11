@@ -39,7 +39,6 @@ impl<'a> ResourceService for WarrenManager<'a> {
         let p = self.state.processes.get_mut(&pid).ok_or(Error::NotFound)?;
         let allocator = &mut *self.ctx.allocator;
         let paddr = p.arena_allocator.alloc_into(pages, p.cnode.cap(), recv, allocator)?;
-        log!("dma_alloc: pid: {:?}, paddr={:#x}, pages={}", pid, paddr, pages);
         Ok((paddr, Frame::from(recv)))
     }
 
@@ -55,7 +54,6 @@ impl<'a> ResourceService for WarrenManager<'a> {
         recv: CapPtr,
     ) -> Result<CapPtr, Error> {
         let pid = pid.bits();
-        log!("get_cap: pid: {:?}, type={:?}, id={}", pid, cap_type, id);
         let proc_cnode = {
             let p = self.state.processes.get(&pid).ok_or(Error::NotFound)?;
             p.cnode.cap()
@@ -215,7 +213,6 @@ impl<'a> WarrenManager<'a> {
         let p = self.state.processes.get_mut(&pid).ok_or(Error::NotFound)?;
         let allocator = &mut *self.ctx.allocator;
         p.arena_allocator.alloc_cap_into(obj_type, flags, p.cnode.cap(), recv, allocator)?;
-        log!("alloc: pid: {:?}, type={:?}, flags={:#x}", pid, obj_type, flags);
         Ok(recv)
     }
 }

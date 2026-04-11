@@ -130,7 +130,6 @@ impl<'a> WarrenManager<'a> {
         let process = self.state.processes.get_mut(&pid).ok_or(Error::NotFound)?;
         let mut _tls = None;
         for phdr in elf.program_headers() {
-            let type_ = phdr.p_type as usize;
             let vaddr = phdr.p_vaddr as usize;
             let mem_size = phdr.p_memsz as usize;
             let file_size = phdr.p_filesz as usize;
@@ -148,14 +147,6 @@ impl<'a> WarrenManager<'a> {
                 perms |= Perms::EXECUTE;
             }
 
-            log!(
-                "Loading segment: type={:#x}, vaddr={:#x}, mem_size={:#x}, file_size={:#x}, perms={:?}",
-                type_,
-                vaddr,
-                mem_size,
-                file_size,
-                perms
-            );
             match phdr.p_type {
                 PT_LOAD => {
                     let start_page = align_down(vaddr, PGSIZE);

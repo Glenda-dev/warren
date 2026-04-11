@@ -9,7 +9,6 @@ use glenda::utils::align::align_up;
 
 impl<'a> WarrenManager<'a> {
     pub fn brk(&mut self, pid: Badge, incr: isize) -> Result<usize, Error> {
-        log!("brk: pid: {:?}, incr={:#x}", pid, incr);
         let process = self.state.processes.get_mut(&pid.bits()).ok_or(Error::NotFound)?;
         let old_brk = process.heap_brk;
         let new_brk = (old_brk as isize + incr) as usize;
@@ -41,8 +40,6 @@ impl<'a> WarrenManager<'a> {
             }
         }
         process.heap_brk = new_brk;
-        log!("brk: old_brk={:#x}, new_brk={:#x}", old_brk, new_brk);
-        // 返回 old_brk 以符合 sbrk 语义（返回新区域的起始地址）
         Ok(old_brk)
     }
 }
