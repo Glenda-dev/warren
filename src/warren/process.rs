@@ -200,10 +200,13 @@ impl<'a> ProcessService for WarrenManager<'a> {
     }
 
     fn spawn(&mut self, parent_pid: Badge, path: &str) -> Result<usize, Error> {
-        let file = self.initrd.get_file(path).ok_or(Error::NotFound)?.to_vec();
+        if self.initrd.get_file(path).is_none() {
+            return Err(Error::NotFound);
+        }
         let pid = self.create(parent_pid, path)?;
         log!("Spawning process: {}, pid: {}, parent_pid: {:?}", path, pid, parent_pid);
-        match self.load_elf(pid, &file) {
+        let file = self.initrd.get_file(path).ok_or(Error::NotFound)?;
+        match self.load_elf(pid, file) {
             Ok((entry, _)) => {
                 let process = self.state.processes.get_mut(&pid).unwrap();
                 let thread = process.threads.get_mut(&0).unwrap();
