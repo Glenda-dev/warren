@@ -112,7 +112,7 @@ impl<'a> ProcessService for WarrenManager<'a> {
                 child_kstack,
             )?;
             // Enable fault handler with badge=pid
-            child_tcb.set_fault_handler(child_endpoint, true)?;
+            child_tcb.set_fault_handler(child_endpoint)?;
             child_tcb.set_address(utcb_va, trapframe_va)?;
             vspace_mgr.map_frame(
                 child_utcb,

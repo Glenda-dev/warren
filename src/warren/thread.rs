@@ -126,7 +126,7 @@ impl<'a> ThreadService for WarrenManager<'a> {
 
         // Configure TCB
         tcb.configure(process.cnode, process.vspace, utcb_frame, trapframe, kstack)?;
-        tcb.set_fault_handler(fault_ep, true)?;
+        tcb.set_fault_handler(fault_ep)?;
 
         tcb.set_address(utcb_vaddr, trapframe_vaddr)?;
         // Set entrypoint
