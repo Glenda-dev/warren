@@ -1,5 +1,5 @@
 use glenda::arch::mem::PGSIZE;
-use glenda::cap::{CNode, CapPtr, Frame, IrqHandler};
+use glenda::cap::{CNode, CapPtr, Page, IrqHandler};
 
 pub const SCRATCH_VA: usize = 0x3000_0000;
 pub const SCRATCH_SIZE: usize = 0x100_0000; // 16MB
@@ -15,7 +15,7 @@ pub const KERNEL_SLOT: CapPtr = CapPtr::from(11);
 pub const IRQ_CONTROL_SLOT: CapPtr = CapPtr::from(12);
 pub const CONSOLE_SLOT: CapPtr = CapPtr::from(5);
 
-pub const BOOTINFO_CAP: Frame = Frame::from(BOOTINFO_SLOT);
+pub const BOOTINFO_CAP: Page = Page::from(BOOTINFO_SLOT);
 pub const UNTYPED_CAP: CNode = CNode::from(UNTYPED_SLOT);
 pub const CONSOLE_CAP: glenda::cap::Console = glenda::cap::Console::from(CONSOLE_SLOT);
 pub const IRQ_CONTROL_CAP: IrqHandler = IrqHandler::from(IRQ_CONTROL_SLOT);

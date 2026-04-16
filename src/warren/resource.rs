@@ -1,7 +1,7 @@
 use crate::WarrenManager;
 use alloc::collections::btree_map::BTreeMap;
 use glenda::arch::mem::PGSIZE;
-use glenda::cap::{CapPtr, CapType, Frame, Kernel, Rights};
+use glenda::cap::{CapPtr, CapType, Page, Kernel, Rights};
 use glenda::error::Error;
 use glenda::interface::{CSpaceService, ResourceService, VSpaceService};
 use glenda::ipc::Badge;
@@ -34,12 +34,12 @@ impl<'a> ResourceService for WarrenManager<'a> {
         pid: Badge,
         pages: usize,
         recv: CapPtr,
-    ) -> Result<(usize, Frame), Error> {
+    ) -> Result<(usize, Page), Error> {
         let pid = pid.bits();
         let p = self.state.processes.get_mut(&pid).ok_or(Error::NotFound)?;
         let allocator = &mut *self.ctx.allocator;
         let paddr = p.arena_allocator.alloc_into(pages, p.cnode.cap(), recv, allocator)?;
-        Ok((paddr, Frame::from(recv)))
+        Ok((paddr, Page::from(recv)))
     }
 
     fn free(&mut self, pid: Badge, cap: CapPtr) -> Result<(), Error> {
@@ -169,7 +169,7 @@ impl<'a> ResourceService for WarrenManager<'a> {
         pid: Badge,
         name: &str,
         recv: CapPtr,
-    ) -> Result<(Frame, usize), Error> {
+    ) -> Result<(Page, usize), Error> {
         let pid = pid.bits();
         log!("get_file: name={}", name);
         let p = self.state.processes.get_mut(&pid).ok_or(Error::NotFound)?;
@@ -180,7 +180,7 @@ impl<'a> ResourceService for WarrenManager<'a> {
         let cspace_mgr = &mut *self.ctx.cspace_mgr;
 
         p.arena_allocator.alloc_into(pages, p.cnode.cap(), recv, global_allocator)?;
-        let frame = Frame::from(CapPtr::concat(p.cnode.cap(), recv));
+        let frame = Page::from(CapPtr::concat(p.cnode.cap(), recv));
         let vaddr = self.ctx.vspace_mgr.map_scratch(
             frame,
             Perms::READ | Perms::WRITE,
@@ -193,7 +193,7 @@ impl<'a> ResourceService for WarrenManager<'a> {
             dst[..len].copy_from_slice(file);
         }
         self.ctx.vspace_mgr.unmap(vaddr, pages)?;
-        Ok((Frame::from(recv), len))
+        Ok((Page::from(recv), len))
     }
 
     fn status(&mut self, _pid: Badge) -> Result<WarrenStatus, Error> {

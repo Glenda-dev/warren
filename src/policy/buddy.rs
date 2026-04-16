@@ -362,7 +362,7 @@ impl UntypedService for BuddyAllocator {
 
         // Ensure we retype the full power-of-two size to avoid leaking the remainder
         // and causing buddy merge failures when blocks are released.
-        let alloc_pages = if obj_type == CapType::Frame || obj_type == CapType::Untyped {
+        let alloc_pages = if obj_type == CapType::Page || obj_type == CapType::Untyped {
             1 << (order - 12)
         } else {
             pages
@@ -373,7 +373,7 @@ impl UntypedService for BuddyAllocator {
                 untyped.retype_untyped(alloc_pages, CSPACE_CAP.cap(), dest)?;
                 self.allocated_untyped.insert(dest, (order, paddr, parent, grand_parent));
             }
-            CapType::Frame => untyped.retype_frame(alloc_pages, CSPACE_CAP.cap(), dest)?,
+            CapType::Page => untyped.retype_page(flags, CSPACE_CAP.cap(), dest)?,
             CapType::CNode => untyped.retype_cnode(CSPACE_CAP.cap(), dest)?,
             CapType::PageTable => untyped.retype_pagetable(flags, CSPACE_CAP.cap(), dest)?,
             CapType::TCB => untyped.retype_tcb(CSPACE_CAP.cap(), dest)?,

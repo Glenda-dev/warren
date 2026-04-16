@@ -5,7 +5,7 @@ use crate::policy::ArenaAllocator;
 use alloc::boxed::Box;
 use alloc::string::ToString;
 use glenda::arch::mem::KSTACK_PAGES;
-use glenda::cap::{CNode, CapPtr, CapType, Endpoint, Frame, Rights, TCB, Untyped, VSpace};
+use glenda::cap::{CNode, CapPtr, CapType, Endpoint, Page, Rights, TCB, Untyped, VSpace};
 use glenda::cap::{CONSOLE_SLOT, CSPACE_SLOT, MONITOR_SLOT, TCB_SLOT, VSPACE_SLOT};
 use glenda::error::Error;
 use glenda::interface::{CSpaceService, ProcessService, VSpaceService};
@@ -82,13 +82,13 @@ impl<'a> ProcessService for WarrenManager<'a> {
 
             // 使用 Arena 分配 UTCB, TrapFrame 等资源
             let (_, utcb_slot) = arena_allocator.alloc(1, allocator)?;
-            let child_utcb = Frame::from(utcb_slot);
+            let child_utcb = Page::from(utcb_slot);
 
             let (_, trapframe_slot) = arena_allocator.alloc(1, allocator)?;
-            let child_trapframe = Frame::from(trapframe_slot);
+            let child_trapframe = Page::from(trapframe_slot);
 
             let (_, kstack_slot) = arena_allocator.alloc(KSTACK_PAGES, allocator)?;
-            let child_kstack = Frame::from(kstack_slot);
+            let child_kstack = Page::from(kstack_slot);
 
             child_cnode.copy(child_pd.cap(), CapPtr::null(), VSPACE_SLOT, Rights::ALL)?;
             child_cnode.copy(child_cnode.cap(), CapPtr::null(), CSPACE_SLOT, Rights::ALL)?;
@@ -114,7 +114,7 @@ impl<'a> ProcessService for WarrenManager<'a> {
             // Enable fault handler with badge=pid
             child_tcb.set_fault_handler(child_endpoint)?;
             child_tcb.set_address(utcb_va, trapframe_va)?;
-            vspace_mgr.map_frame(
+            vspace_mgr.map_page(
                 child_utcb,
                 utcb_va,
                 Perms::READ | Perms::WRITE,
@@ -122,7 +122,7 @@ impl<'a> ProcessService for WarrenManager<'a> {
                 allocator,
                 cspace_mgr,
             )?;
-            vspace_mgr.map_frame(
+            vspace_mgr.map_page(
                 child_trapframe,
                 trapframe_va,
                 Perms::READ | Perms::WRITE | Perms::SUPERVISOR,

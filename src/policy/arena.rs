@@ -54,7 +54,7 @@ impl ArenaAllocator {
             CapType::Untyped => arena.untyped.retype_untyped(flags, dest_cnode, dest_slot),
             CapType::TCB => arena.untyped.retype_tcb(dest_cnode, dest_slot),
             CapType::Endpoint => arena.untyped.retype_endpoint(dest_cnode, dest_slot),
-            CapType::Frame => arena.untyped.retype_frame(flags, dest_cnode, dest_slot),
+            CapType::Page => arena.untyped.retype_page(flags, dest_cnode, dest_slot),
             CapType::PageTable => arena.untyped.retype_pagetable(flags, dest_cnode, dest_slot),
             CapType::CNode => arena.untyped.retype_cnode(dest_cnode, dest_slot),
             CapType::VSpace => arena.untyped.retype_vspace(dest_cnode, dest_slot),
@@ -149,17 +149,18 @@ impl ArenaAllocator {
         self.alloc_cap_into(obj_type, flags, dest_cnode, dest_slot, untyped_service)
     }
 
-    /// Allocate a frame from arenas.
+    /// Allocate a page capability from arenas.
     /// Returns (physical address, absolute capability pointer in process CSpace).
     pub fn alloc(
         &mut self,
         pages: usize,
         untyped_service: &mut dyn UntypedService,
     ) -> Result<(usize, CapPtr), Error> {
-        self.alloc_cap(CapType::Frame, pages, untyped_service)
+        let level = CapType::page_pages_to_level(pages).ok_or(Error::InvalidArgs)?;
+        self.alloc_cap(CapType::Page, level, untyped_service)
     }
 
-    /// Allocate a frame from arenas directly into `dest`.
+    /// Allocate a page capability from arenas directly into `dest`.
     /// Returns physical address.
     pub fn alloc_into(
         &mut self,
@@ -168,7 +169,8 @@ impl ArenaAllocator {
         dest_slot: CapPtr,
         untyped_service: &mut dyn UntypedService,
     ) -> Result<usize, Error> {
-        self.alloc_cap_into(CapType::Frame, pages, dest_cnode, dest_slot, untyped_service)
+        let level = CapType::page_pages_to_level(pages).ok_or(Error::InvalidArgs)?;
+        self.alloc_cap_into(CapType::Page, level, dest_cnode, dest_slot, untyped_service)
     }
 
     pub fn add_arena(&mut self, untyped: Untyped, paddr: usize, pages: usize) {

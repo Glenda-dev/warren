@@ -2,7 +2,7 @@ use super::WarrenManager;
 use crate::layout::SERVICE_PRIORITY;
 use alloc::collections::btree_set::BTreeSet;
 use glenda::arch::mem::KSTACK_PAGES;
-use glenda::cap::{CapPtr, CapType, Endpoint, Frame, Rights, TCB};
+use glenda::cap::{CapPtr, CapType, Endpoint, Page, Rights, TCB};
 use glenda::error::Error;
 use glenda::interface::{ThreadService, VSpaceService};
 use glenda::ipc::Badge;
@@ -30,7 +30,7 @@ impl TLS {
 pub struct Thread {
     pub tid: usize,
     pub tcb: TCB,
-    pub utcb: Frame,
+    pub utcb: Page,
     pub stack_base: usize,
     pub stack_pages: usize,
     pub state: ThreadState,
@@ -46,7 +46,7 @@ pub enum ThreadState {
 }
 
 impl Thread {
-    pub fn new(tid: usize, tcb: TCB, utcb: Frame, stack_base: usize, stack_pages: usize) -> Self {
+    pub fn new(tid: usize, tcb: TCB, utcb: Page, stack_base: usize, stack_pages: usize) -> Self {
         Self {
             tid,
             tcb,
@@ -81,22 +81,23 @@ impl<'a> ThreadService for WarrenManager<'a> {
         let (_, tcb_slot) = process.arena_allocator.alloc_cap(CapType::TCB, 0, allocator)?;
         let tcb = TCB::from(tcb_slot);
 
-        let (_, utcb_slot) = process.arena_allocator.alloc_cap(CapType::Frame, 1, allocator)?;
-        let utcb_frame = Frame::from(utcb_slot);
+        let (_, utcb_slot) = process.arena_allocator.alloc_cap(CapType::Page, 1, allocator)?;
+        let utcb_frame = Page::from(utcb_slot);
 
         let (_, trapframe_slot) =
-            process.arena_allocator.alloc_cap(CapType::Frame, 1, allocator)?;
-        let trapframe = Frame::from(trapframe_slot);
+            process.arena_allocator.alloc_cap(CapType::Page, 1, allocator)?;
+        let trapframe = Page::from(trapframe_slot);
 
+        let kstack_level = CapType::page_pages_to_level(KSTACK_PAGES).ok_or(Error::InvalidArgs)?;
         let (_, kstack_slot) =
-            process.arena_allocator.alloc_cap(CapType::Frame, KSTACK_PAGES, allocator)?;
-        let kstack = Frame::from(kstack_slot);
+            process.arena_allocator.alloc_cap(CapType::Page, kstack_level, allocator)?;
+        let kstack = Page::from(kstack_slot);
 
         // Map UTCB and TrapFrame to unique VAs
         let utcb_vaddr = get_utcb_va(tid);
         let trapframe_vaddr = get_trapframe_va(tid);
 
-        process.vspace_mgr.map_frame(
+        process.vspace_mgr.map_page(
             utcb_frame,
             utcb_vaddr,
             Perms::READ | Perms::WRITE,
@@ -104,7 +105,7 @@ impl<'a> ThreadService for WarrenManager<'a> {
             allocator,
             cspace_mgr,
         )?;
-        process.vspace_mgr.map_frame(
+        process.vspace_mgr.map_page(
             trapframe,
             trapframe_vaddr,
             Perms::READ | Perms::WRITE | Perms::SUPERVISOR,

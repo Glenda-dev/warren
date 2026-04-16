@@ -1,7 +1,7 @@
 use super::WarrenManager;
 use crate::layout::MAX_STACK_SIZE;
 use glenda::arch::mem::PGSIZE;
-use glenda::cap::Frame;
+use glenda::cap::Page;
 use glenda::error::Error;
 use glenda::interface::{FaultService, ProcessService, VSpaceService};
 use glenda::ipc::Badge;
@@ -70,9 +70,9 @@ impl<'a> FaultService for WarrenManager<'a> {
             let (_, frame_slot) = process.arena_allocator.alloc(1, allocator)?;
             // 2. Map Frame
             let perms = Perms::READ | Perms::WRITE;
-            let frame = Frame::from(frame_slot);
+            let frame = Page::from(frame_slot);
 
-            process.vspace_mgr.map_frame(frame, current_addr, perms, 1, allocator, cspace_mgr)?;
+            process.vspace_mgr.map_page(frame, current_addr, perms, 1, allocator, cspace_mgr)?;
 
             // 3. Record Resource
             thread.stack_pages += 1;

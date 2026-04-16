@@ -4,7 +4,7 @@ use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::collections::btree_set::BTreeSet;
 use alloc::string::String;
-use glenda::cap::{CNode, CapPtr, Frame, TCB, VSpace};
+use glenda::cap::{CNode, CapPtr, Page, TCB, VSpace};
 use glenda::utils::manager::VSpaceManager;
 
 /// Process Control Block in Warren
@@ -51,7 +51,7 @@ impl Process {
         tcb: TCB,
         vspace: VSpace,
         cnode: CNode,
-        utcb: Frame,
+        utcb: Page,
         vspace_mgr: VSpaceManager,
         arena_allocator: Box<ArenaAllocator>,
         stack_base: usize,

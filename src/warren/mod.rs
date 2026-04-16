@@ -13,9 +13,8 @@ use crate::policy::MemoryPolicy;
 use crate::warren::resource::ResourceRegistry;
 use alloc::collections::{BTreeMap, VecDeque};
 use alloc::vec::Vec;
-use core::cmp::min;
-use glenda::arch::mem::PGSIZE;
-use glenda::cap::{CNode, CapPtr, Endpoint, Frame, Kernel, Reply};
+use glenda::arch::mem::{PGSIZE, SHIFTS};
+use glenda::cap::{CNode, CapPtr, Endpoint, Page, Kernel, Reply};
 use glenda::cap::{CONSOLE_SLOT, CSPACE_CAP};
 use glenda::error::Error;
 use glenda::interface::{CSpaceService, VSpaceService};
@@ -32,6 +31,8 @@ pub use data::*;
 pub use thread::TLS;
 
 const SERVICE_PRIORITY: u8 = 252;
+const L1_HUGE_PAGES: usize = 1 << (SHIFTS[1] - SHIFTS[0]);
+const L1_HUGE_SIZE: usize = L1_HUGE_PAGES * PGSIZE;
 
 pub struct SystemContext<'a> {
     pub vspace_mgr: &'a mut VSpaceManager,
@@ -151,47 +152,74 @@ impl<'a> WarrenManager<'a> {
                 PT_LOAD => {
                     let start_page = align_down(vaddr, PGSIZE);
                     let end_page = align_up(vaddr + mem_size, PGSIZE);
-                    let num_pages = (end_page - start_page) / PGSIZE;
+                    let mut chunk_start = start_page;
+                    while chunk_start < end_page {
+                        let remaining_pages = (end_page - chunk_start) / PGSIZE;
+                        let chunk_pages = if chunk_start % L1_HUGE_SIZE == 0
+                            && remaining_pages >= L1_HUGE_PAGES
+                        {
+                            (remaining_pages / L1_HUGE_PAGES) * L1_HUGE_PAGES
+                        } else {
+                            let next_huge = align_up(chunk_start + 1, L1_HUGE_SIZE);
+                            let pages_to_next_huge = if next_huge > chunk_start {
+                                (next_huge - chunk_start) / PGSIZE
+                            } else {
+                                remaining_pages
+                            };
+                            core::cmp::min(remaining_pages, core::cmp::max(pages_to_next_huge, 1))
+                        };
 
-                    let global_allocator = &mut *self.ctx.allocator;
-                    let cspace_mgr = &mut *self.ctx.cspace_mgr;
+                        let global_allocator = &mut *self.ctx.allocator;
+                        let cspace_mgr = &mut *self.ctx.cspace_mgr;
 
-                    let (_, frame_cap) =
-                        process.arena_allocator.alloc(num_pages, global_allocator)?;
-                    let frame = Frame::from(frame_cap);
+                        let (_, frame_cap) =
+                            process.arena_allocator.alloc(chunk_pages, global_allocator)?;
+                        let frame = Page::from(frame_cap);
 
-                    process.vspace_mgr.map_frame(
-                        frame,
-                        start_page,
-                        perms,
-                        num_pages,
-                        global_allocator,
-                        cspace_mgr,
-                    )?;
+                        process.vspace_mgr.map_page(
+                            frame,
+                            chunk_start,
+                            perms,
+                            chunk_pages,
+                            global_allocator,
+                            cspace_mgr,
+                        )?;
 
-                    let scratch_vaddr = self.ctx.vspace_mgr.map_scratch(
-                        frame,
-                        Perms::READ | Perms::WRITE,
-                        num_pages,
-                        global_allocator,
-                        cspace_mgr,
-                    )?;
+                        let scratch_vaddr = self.ctx.vspace_mgr.map_scratch(
+                            frame,
+                            Perms::READ | Perms::WRITE,
+                            chunk_pages,
+                            global_allocator,
+                            cspace_mgr,
+                        )?;
 
-                    let dest_slice = unsafe {
-                        core::slice::from_raw_parts_mut(
-                            scratch_vaddr as *mut u8,
-                            num_pages * PGSIZE,
-                        )
-                    };
-                    dest_slice.fill(0);
-                    let padding = vaddr - start_page;
-                    if padding < dest_slice.len() {
-                        let actual_copy = min(file_size, dest_slice.len() - padding);
-                        dest_slice[padding..padding + actual_copy]
-                            .copy_from_slice(&elf_data[offset..offset + actual_copy]);
+                        let chunk_bytes = chunk_pages * PGSIZE;
+                        let dest_slice = unsafe {
+                            core::slice::from_raw_parts_mut(scratch_vaddr as *mut u8, chunk_bytes)
+                        };
+                        dest_slice.fill(0);
+
+                        let chunk_end = chunk_start + chunk_bytes;
+                        let file_region_start = vaddr;
+                        let file_region_end = vaddr.saturating_add(file_size);
+                        let copy_start = core::cmp::max(chunk_start, file_region_start);
+                        let copy_end = core::cmp::min(chunk_end, file_region_end);
+
+                        if copy_end > copy_start {
+                            let src_off = offset + (copy_start - file_region_start);
+                            let dst_off = copy_start - chunk_start;
+                            let copy_len = copy_end - copy_start;
+                            if src_off < elf_data.len() {
+                                let actual = core::cmp::min(copy_len, elf_data.len() - src_off);
+                                dest_slice[dst_off..dst_off + actual]
+                                    .copy_from_slice(&elf_data[src_off..src_off + actual]);
+                            }
+                        }
+
+                        self.ctx.vspace_mgr.unmap(scratch_vaddr, chunk_pages)?;
+                        process.image_slots.insert(frame_cap);
+                        chunk_start += chunk_bytes;
                     }
-                    self.ctx.vspace_mgr.unmap(scratch_vaddr, num_pages)?;
-                    process.image_slots.insert(frame_cap);
                 }
                 PT_TLS => {
                     _tls = Some(TLS {
