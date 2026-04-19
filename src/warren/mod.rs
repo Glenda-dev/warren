@@ -10,11 +10,11 @@ use crate::elf::ElfFile;
 use crate::elf::{PF_W, PF_X, PT_LOAD, PT_TLS};
 use crate::layout::*;
 use crate::policy::MemoryPolicy;
-use crate::warren::resource::ResourceRegistry;
+use crate::warren::resource::{PageFrameState, ResourceLedger, ResourceRegistry};
 use alloc::collections::{BTreeMap, VecDeque};
 use alloc::vec::Vec;
 use glenda::arch::mem::{PGSIZE, SHIFTS};
-use glenda::cap::{CNode, CapPtr, Endpoint, Page, Kernel, Reply};
+use glenda::cap::{CNode, CapPtr, Endpoint, Kernel, Page, Reply};
 use glenda::cap::{CONSOLE_SLOT, CSPACE_CAP};
 use glenda::error::Error;
 use glenda::interface::{CSpaceService, VSpaceService};
@@ -103,6 +103,8 @@ impl<'a> WarrenManager<'a> {
                     untyped_cap: UNTYPED_SLOT,
                     bootinfo_cap: BOOTINFO_SLOT,
                     endpoints: BTreeMap::new(),
+                    ledger: ResourceLedger::default(),
+                    frame_registry: Default::default(),
                 },
             },
             ipc: WarrenIpc {
@@ -128,6 +130,7 @@ impl<'a> WarrenManager<'a> {
             return Err(Error::InvalidArgs);
         }
         let mut max_vaddr = 0;
+        let mut allocated_pages = 0usize;
         let process = self.state.processes.get_mut(&pid).ok_or(Error::NotFound)?;
         let mut _tls = None;
         for phdr in elf.program_headers() {
@@ -174,6 +177,7 @@ impl<'a> WarrenManager<'a> {
 
                         let (_, frame_cap) =
                             process.arena_allocator.alloc(chunk_pages, global_allocator)?;
+                        allocated_pages = allocated_pages.saturating_add(chunk_pages);
                         let frame = Page::from(frame_cap);
 
                         process.vspace_mgr.map_page(
@@ -232,6 +236,9 @@ impl<'a> WarrenManager<'a> {
                 _ => {}
             }
         }
+        if allocated_pages > 0 {
+            self.ledger_record_internal_pages(pid, allocated_pages, "load_elf_segments");
+        }
         let ep = elf.entry_point();
         let heap = align_up(max_vaddr, PGSIZE);
         log!("Image loaded with entry_point: {:#x}, heap: {:#x}", ep, heap);
@@ -241,6 +248,8 @@ impl<'a> WarrenManager<'a> {
     fn exit_wrapper(&mut self, pid: Badge, code: usize) -> Result<(), Error> {
         CSPACE_CAP.delete(self.ipc.reply.cap())?;
         if let Some(mut p) = self.state.processes.remove(&pid.bits()) {
+            let mut ledger = self.ledger_take_process(pid.bits());
+
             for (tid, thread) in p.threads.iter() {
                 if let Err(e) = thread.tcb.suspend() {
                     warn!("Failed to suspend thread {} of pid {:?}: {:?}", tid, pid, e);
@@ -261,10 +270,15 @@ impl<'a> WarrenManager<'a> {
             // Cleanup VSpace shadow resources first.
             let allocator = &mut *self.ctx.allocator;
             let cspace_mgr = &mut *self.ctx.cspace_mgr;
+            let mut frame_release_caps: Vec<CapPtr> = Vec::new();
             p.vspace_mgr.drop(allocator, cspace_mgr);
 
             // Return process arena roots to global allocator (buddy merge path).
             let released_arena_slots = p.arena_allocator.release_to(allocator);
+            for slot in &released_arena_slots {
+                ledger.live_caps.remove(slot);
+                frame_release_caps.push(*slot);
+            }
 
             for slot in released_arena_slots {
                 p.allocated_slots.remove(&slot);
@@ -296,7 +310,48 @@ impl<'a> WarrenManager<'a> {
                 if deleted && cspace_mgr.owns_slot(slot) {
                     cspace_mgr.free(slot);
                 }
+
+                ledger.live_caps.remove(&slot);
+                frame_release_caps.push(slot);
             }
+
+            for slot in p.image_slots.iter() {
+                ledger.live_caps.remove(slot);
+                frame_release_caps.push(*slot);
+            }
+            for thread in p.threads.values() {
+                for slot in thread.allocated_slots.iter() {
+                    ledger.live_caps.remove(slot);
+                    frame_release_caps.push(*slot);
+                }
+            }
+
+            for cap in frame_release_caps {
+                self.frame_registry_release_cap(cap);
+            }
+
+            let mut unresolved_frames = self.frame_registry_take_process(pid.bits());
+            if !unresolved_frames.is_empty() {
+                for (cap, record) in unresolved_frames.iter_mut() {
+                    record.state = PageFrameState::Dirty;
+                    warn!(
+                        "frame-registry: pid={} unresolved cap={:?} pages={} state={:?} source={}",
+                        pid.bits(),
+                        cap,
+                        record.pages,
+                        record.state,
+                        record.source
+                    );
+                }
+            }
+
+            let _ = ledger;
+            log!(
+                "frame-registry: pid={} unresolved_frames={} leak_gate={}",
+                pid.bits(),
+                unresolved_frames.len(),
+                if unresolved_frames.is_empty() { "PASS" } else { "FAIL" }
+            );
             log!("Process exited: pid: {}, code={}", pid, code);
         } else {
             error!("Failed to find process with pid: {:?}", pid);

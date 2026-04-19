@@ -69,6 +69,7 @@ impl<'a> ThreadService for WarrenManager<'a> {
         tls: usize,
     ) -> Result<usize, Error> {
         let pid = pid.bits();
+        let mut internal_pages = 0usize;
         log!("Creating thread for pid: {:?}", pid);
         let process = self.state.processes.get_mut(&pid).ok_or(Error::NotFound)?;
         let tid = process.next_tid;
@@ -79,18 +80,21 @@ impl<'a> ThreadService for WarrenManager<'a> {
 
         // Allocate slots from process arena
         let (_, tcb_slot) = process.arena_allocator.alloc_cap(CapType::TCB, 0, allocator)?;
+        internal_pages = internal_pages.saturating_add(1);
         let tcb = TCB::from(tcb_slot);
 
         let (_, utcb_slot) = process.arena_allocator.alloc_cap(CapType::Page, 1, allocator)?;
+        internal_pages = internal_pages.saturating_add(1);
         let utcb_frame = Page::from(utcb_slot);
 
-        let (_, trapframe_slot) =
-            process.arena_allocator.alloc_cap(CapType::Page, 1, allocator)?;
+        let (_, trapframe_slot) = process.arena_allocator.alloc_cap(CapType::Page, 1, allocator)?;
+        internal_pages = internal_pages.saturating_add(1);
         let trapframe = Page::from(trapframe_slot);
 
         let kstack_level = CapType::page_pages_to_level(KSTACK_PAGES).ok_or(Error::InvalidArgs)?;
         let (_, kstack_slot) =
             process.arena_allocator.alloc_cap(CapType::Page, kstack_level, allocator)?;
+        internal_pages = internal_pages.saturating_add(KSTACK_PAGES);
         let kstack = Page::from(kstack_slot);
 
         // Map UTCB and TrapFrame to unique VAs
@@ -146,6 +150,19 @@ impl<'a> ThreadService for WarrenManager<'a> {
         thread.allocated_slots.insert(kstack_slot);
 
         process.threads.insert(tid, thread);
+
+        self.frame_registry_register_internal(pid, utcb_slot, 1, "thread_create_utcb");
+        self.frame_registry_register_internal(pid, trapframe_slot, 1, "thread_create_trapframe");
+        self.frame_registry_register_internal(
+            pid,
+            kstack_slot,
+            KSTACK_PAGES,
+            "thread_create_kstack",
+        );
+
+        if internal_pages > 0 {
+            self.ledger_record_internal_pages(pid, internal_pages, "thread_create");
+        }
 
         Ok(tid)
     }

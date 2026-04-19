@@ -4,8 +4,11 @@ use crate::layout::*;
 use crate::policy::ArenaAllocator;
 use alloc::boxed::Box;
 use alloc::string::ToString;
+use alloc::vec::Vec;
 use glenda::arch::mem::KSTACK_PAGES;
-use glenda::cap::{CNode, CapPtr, CapType, Endpoint, Page, Rights, TCB, Untyped, VSpace};
+use glenda::cap::{
+    CNODE_PAGES, CNode, CapPtr, CapType, Endpoint, Page, Rights, TCB, Untyped, VSpace,
+};
 use glenda::cap::{CONSOLE_SLOT, CSPACE_SLOT, MONITOR_SLOT, TCB_SLOT, VSPACE_SLOT};
 use glenda::error::Error;
 use glenda::interface::{CSpaceService, ProcessService, VSpaceService};
@@ -28,12 +31,15 @@ impl<'a> ProcessService for WarrenManager<'a> {
         let mut rollback_arena: Option<Box<ArenaAllocator>> = None;
         let mut rollback_arena_cnode_slot: Option<CapPtr> = None;
         let mut rollback_arena_untyped_slot: Option<CapPtr> = None;
+        let mut internal_pages = 0usize;
+        let mut internal_frames: Vec<(CapPtr, usize, &'static str)> = Vec::new();
 
         let create_result: Result<Process, Error> = (|| {
             // 为进程分配 Arena 专用的 CNode 和 CSpaceManager
             let arena_cnode_slot = cspace_mgr.alloc(allocator)?;
             rollback_arena_cnode_slot = Some(arena_cnode_slot);
             allocator.alloc(CapType::CNode, 0, arena_cnode_slot)?;
+            internal_pages = internal_pages.saturating_add(CNODE_PAGES);
             let arena_cnode = CNode::from(arena_cnode_slot);
 
             // 我们需要手动分配第一个二级 CNode，因为 ArenaAllocator 无法递归分配
@@ -46,6 +52,7 @@ impl<'a> ProcessService for WarrenManager<'a> {
             let arena_size_pages = 256; // 1MB 初始大小
             let arena_paddr =
                 allocator.alloc(CapType::Untyped, arena_size_pages, arena_untyped_slot)?;
+            internal_pages = internal_pages.saturating_add(arena_size_pages);
             let arena_untyped = Untyped::from(arena_untyped_slot);
             arena_untyped.retype_cnode(arena_cnode.cap(), first_l1_slot)?;
             arena_cspace_mgr.mark_present(1);
@@ -72,22 +79,31 @@ impl<'a> ProcessService for WarrenManager<'a> {
             let child_endpoint = Endpoint::from(ep_slot);
 
             let (_, cnode_slot) = arena_allocator.alloc_cap(CapType::CNode, 0, allocator)?;
+            internal_pages = internal_pages.saturating_add(CNODE_PAGES);
             let child_cnode = CNode::from(cnode_slot);
 
             let (_, pd_slot) = arena_allocator.alloc_cap(CapType::VSpace, 0, allocator)?;
+            internal_pages = internal_pages.saturating_add(1);
             let child_pd = VSpace::from(pd_slot);
 
             let (_, tcb_slot) = arena_allocator.alloc_cap(CapType::TCB, 0, allocator)?;
+            internal_pages = internal_pages.saturating_add(1);
             let child_tcb = TCB::from(tcb_slot);
 
             // 使用 Arena 分配 UTCB, TrapFrame 等资源
             let (_, utcb_slot) = arena_allocator.alloc(1, allocator)?;
+            internal_pages = internal_pages.saturating_add(1);
+            internal_frames.push((utcb_slot, 1, "process_create_utcb"));
             let child_utcb = Page::from(utcb_slot);
 
             let (_, trapframe_slot) = arena_allocator.alloc(1, allocator)?;
+            internal_pages = internal_pages.saturating_add(1);
+            internal_frames.push((trapframe_slot, 1, "process_create_trapframe"));
             let child_trapframe = Page::from(trapframe_slot);
 
             let (_, kstack_slot) = arena_allocator.alloc(KSTACK_PAGES, allocator)?;
+            internal_pages = internal_pages.saturating_add(KSTACK_PAGES);
+            internal_frames.push((kstack_slot, KSTACK_PAGES, "process_create_kstack"));
             let child_kstack = Page::from(kstack_slot);
 
             child_cnode.copy(child_pd.cap(), CapPtr::null(), VSPACE_SLOT, Rights::ALL)?;
@@ -167,6 +183,12 @@ impl<'a> ProcessService for WarrenManager<'a> {
         match create_result {
             Ok(process) => {
                 self.state.processes.insert(pid, process);
+                for (cap, pages, source) in &internal_frames {
+                    self.frame_registry_register_internal(pid, *cap, *pages, source);
+                }
+                if internal_pages > 0 {
+                    self.ledger_record_internal_pages(pid, internal_pages, "process_create");
+                }
                 Ok(pid)
             }
             Err(e) => {

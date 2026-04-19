@@ -10,9 +10,11 @@ use glenda::utils::manager::vspace::{L1_HUGE_PAGES, L1_HUGE_SIZE};
 
 impl<'a> WarrenManager<'a> {
     pub fn brk(&mut self, pid: Badge, incr: isize) -> Result<usize, Error> {
-        let process = self.state.processes.get_mut(&pid.bits()).ok_or(Error::NotFound)?;
+        let pid_bits = pid.bits();
+        let process = self.state.processes.get_mut(&pid_bits).ok_or(Error::NotFound)?;
         let old_brk = process.heap_brk;
         let new_brk = (old_brk as isize + incr) as usize;
+        let mut allocated_pages = 0usize;
 
         if new_brk < process.heap_start {
             error!("brk: new_brk {:#x} is below heap_start {:#x}", new_brk, process.heap_start);
@@ -47,17 +49,14 @@ impl<'a> WarrenManager<'a> {
                     let target_pages = if try_huge { L1_HUGE_PAGES } else { chunk_pages };
 
                     let (paddr, slot) = process.arena_allocator.alloc(target_pages, allocator)?;
+                    allocated_pages = allocated_pages.saturating_add(target_pages);
                     let frame = Page::from(slot);
                     let perms = Perms::READ | Perms::WRITE;
 
                     if try_huge && paddr % L1_HUGE_SIZE == 0 {
-                        let mapped_huge = process.vspace_mgr.map_frame_huge_2m(
-                            frame,
-                            cursor,
-                            perms,
-                            allocator,
-                            cspace_mgr,
-                        )?;
+                        let mapped_huge = process
+                            .vspace_mgr
+                            .map_frame_huge_2m(frame, cursor, perms, allocator, cspace_mgr)?;
                         if !mapped_huge {
                             process.vspace_mgr.map_page(
                                 frame,
@@ -86,6 +85,9 @@ impl<'a> WarrenManager<'a> {
             }
         }
         process.heap_brk = new_brk;
+        if allocated_pages > 0 {
+            self.ledger_record_internal_pages(pid_bits, allocated_pages, "brk_expand");
+        }
         Ok(old_brk)
     }
 }
