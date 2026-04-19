@@ -215,7 +215,6 @@ impl<'a> ResourceService for WarrenManager<'a> {
         if let None = self.state.res.frame_registry.release(tracked) {
             warn!("free: pid: {:?}, cap={:?} not found in frame registry", pid, tracked);
         }
-        log!("free: pid: {:?}, cap={:?}", pid, cap);
         Ok(())
     }
     fn get_cap(
