@@ -346,12 +346,6 @@ impl<'a> WarrenManager<'a> {
             }
 
             let _ = ledger;
-            log!(
-                "frame-registry: pid={} unresolved_frames={} leak_gate={}",
-                pid.bits(),
-                unresolved_frames.len(),
-                if unresolved_frames.is_empty() { "PASS" } else { "FAIL" }
-            );
             log!("Process exited: pid: {}, code={}", pid, code);
         } else {
             error!("Failed to find process with pid: {:?}", pid);

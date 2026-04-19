@@ -212,15 +212,8 @@ impl<'a> ResourceService for WarrenManager<'a> {
         }
 
         self.state.res.ledger.record_free_slot(pid, tracked);
-        if let Some(record) = self.state.res.frame_registry.release(tracked) {
-            log!(
-                "frame-registry: free pid={} cap={:?} pages={} state={:?} source={}",
-                pid,
-                tracked,
-                record.pages,
-                record.state,
-                record.source
-            );
+        if let None = self.state.res.frame_registry.release(tracked) {
+            warn!("free: pid: {:?}, cap={:?} not found in frame registry", pid, tracked);
         }
         log!("free: pid: {:?}, cap={:?}", pid, cap);
         Ok(())
