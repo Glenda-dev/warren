@@ -14,8 +14,8 @@ use crate::warren::resource::{PageFrameState, ResourceLedger, ResourceRegistry};
 use alloc::collections::{BTreeMap, VecDeque};
 use alloc::vec::Vec;
 use glenda::arch::mem::{PGSIZE, SHIFTS};
+use glenda::cap::CONSOLE_SLOT;
 use glenda::cap::{CNode, CapPtr, Endpoint, Kernel, Page, Reply};
-use glenda::cap::{CONSOLE_SLOT, CSPACE_CAP};
 use glenda::error::Error;
 use glenda::interface::{CSpaceService, VSpaceService};
 use glenda::ipc::{Badge, IpcRouter};
@@ -246,7 +246,6 @@ impl<'a> WarrenManager<'a> {
     }
 
     fn exit_wrapper(&mut self, pid: Badge, code: usize) -> Result<(), Error> {
-        CSPACE_CAP.delete(self.ipc.reply.cap())?;
         if let Some(mut p) = self.state.processes.remove(&pid.bits()) {
             let mut ledger = self.ledger_take_process(pid.bits());
 
