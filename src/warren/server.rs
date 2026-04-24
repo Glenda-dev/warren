@@ -81,12 +81,8 @@ impl<'a> SystemService for WarrenManager<'a> {
                 }
             };
             if let Err(e) = self.reply(&mut utcb) {
-                // Ignore reply failures when the target process might have exited.
-                // However, we still log it if it's not a common "InvalidCapability" error.
-                if e != Error::InvalidCapability {
-                    let b = utcb.get_badge();
-                    error!("Process {} reply error: {:?}", b.bits() >> 16, e);
-                }
+                let b = utcb.get_badge();
+                error!("Process {} reply error: {:?}", b.bits() >> 16, e);
             }
         }
         Ok(())

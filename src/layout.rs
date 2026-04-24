@@ -1,5 +1,5 @@
 use glenda::arch::mem::PGSIZE;
-use glenda::cap::{CNode, CapPtr, Page, IrqHandler};
+use glenda::cap::{CNode, CapPtr, IrqHandler, Page};
 
 pub const SCRATCH_VA: usize = 0x3000_0000;
 pub const SCRATCH_SIZE: usize = 0x100_0000; // 16MB
